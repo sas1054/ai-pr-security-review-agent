@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - service: webhook-receiver
+            dir: src/webhook-receiver
+            requirements: requirements.txt
+          - service: orchestrator
+            dir: src/orchestrator
+            requirements: requirements.txt
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ${{ matrix.dir }}/${{ matrix.requirements }}
+
+      - name: Install dependencies
+        run: pip install -r ${{ matrix.dir }}/${{ matrix.requirements }} pytest
+
+      - name: Run tests
+        working-directory: ${{ matrix.dir }}
+        run: pytest -v

@@ -1,0 +1,43 @@
+version: "3.9"
+
+# Local development stack — no Azure credentials required.
+# Start with: docker-compose up --build
+#
+# What runs locally:
+#   webhook-receiver  — listens on http://localhost:7071/api/webhook
+#   orchestrator      — polls the (fake) queue on startup, exits after one run
+#
+# What is stubbed:
+#   Service Bus → not connected; webhook logs the job payload instead of enqueuing
+#   Key Vault   → not connected; secrets come from .env.local
+#   ADO API     → pointed at ADO_ORG_URL; needs ADO_PAT in .env.local
+#   Semgrep     → runs inside the orchestrator container (installed in image)
+
+services:
+  webhook-receiver:
+    build:
+      context: src/webhook-receiver
+    ports:
+      - "7071:80"
+    env_file: .env.local
+    environment:
+      # Override SERVICE_BUS_NAMESPACE to empty so enqueue falls back to log-only
+      SERVICE_BUS_NAMESPACE: ""
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: src/orchestrator
+    env_file: .env.local
+    environment:
+      SERVICE_BUS_NAMESPACE: ""
+    # In local mode, feed a sample job via stdin instead of Service Bus
+    command: python -c "
+import json, os
+from orchestrator import process_job
+job = json.loads(os.environ.get('SAMPLE_JOB', '{}'))
+if job: process_job(job)
+else: print('Set SAMPLE_JOB env var to run locally')
+"
+    depends_on:
+      - webhook-receiver

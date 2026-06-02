@@ -1,11 +1,8 @@
 name: Deploy Infrastructure
 
+# Manual trigger only — requires Azure OIDC secrets to be configured first.
+# See docs/runbook.md "Configuring the GitHub Actions OIDC trust" before enabling push trigger.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'infra/**'
-      - '.github/workflows/deploy-infra.yml'
   workflow_dispatch:
     inputs:
       env:
@@ -23,7 +20,7 @@ jobs:
   deploy:
     name: Bicep deploy
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.env || 'dev' }}
+    environment: ${{ github.event.inputs.env }}
 
     steps:
       - name: Checkout
@@ -36,21 +33,21 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Bicep what-if (preview changes)
+      - name: Bicep what-if
         run: |
           az deployment sub what-if \
             --location ${{ vars.AZURE_LOCATION || 'eastus' }} \
             --template-file infra/main.bicep \
             --parameters infra/main.bicepparam \
-            --parameters env=${{ github.event.inputs.env || 'dev' }}
+            --parameters env=${{ github.event.inputs.env }}
 
-      - name: Deploy infrastructure
+      - name: Deploy
         run: |
           az deployment sub create \
             --location ${{ vars.AZURE_LOCATION || 'eastus' }} \
             --template-file infra/main.bicep \
             --parameters infra/main.bicepparam \
-            --parameters env=${{ github.event.inputs.env || 'dev' }} \
+            --parameters env=${{ github.event.inputs.env }} \
             --output json
 
       - name: Azure logout

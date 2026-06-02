@@ -1,4 +1,4 @@
-name: Build & Push to ACR
+name: Build & Push
 
 on:
   push:
@@ -12,44 +12,49 @@ on:
       - 'src/**'
 
 permissions:
-  id-token: write   # OIDC token for Azure login
   contents: read
+  packages: write   # push to ghcr.io — GITHUB_TOKEN is always available, no setup needed
 
 env:
-  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}   # e.g. acr<prefix><env>.azurecr.io
-  IMAGE_NAME: webhook-receiver
+  REGISTRY: ghcr.io
 
 jobs:
   build-push:
-    name: Build & push
+    name: Build & push — ${{ matrix.service }}
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        service:
+          - webhook-receiver
+          - orchestrator
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Azure login (OIDC — no secrets)
-        uses: azure/login@v2
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: ACR login
-        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build image
-        run: |
-          docker build \
-            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest \
-            src/webhook-receiver
-
-      # Skip push on PRs — build only to validate
-      - name: Push image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: docker push --all-tags ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}
-
-      - name: Azure logout
-        if: always()
-        run: az logout
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: src/${{ matrix.service }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
