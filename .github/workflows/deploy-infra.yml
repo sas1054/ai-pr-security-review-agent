@@ -1,0 +1,58 @@
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/deploy-infra.yml'
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, staging, prod]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Bicep deploy
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.env || 'dev' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Bicep what-if (preview changes)
+        run: |
+          az deployment sub what-if \
+            --location ${{ vars.AZURE_LOCATION || 'eastus' }} \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam \
+            --parameters env=${{ github.event.inputs.env || 'dev' }}
+
+      - name: Deploy infrastructure
+        run: |
+          az deployment sub create \
+            --location ${{ vars.AZURE_LOCATION || 'eastus' }} \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam \
+            --parameters env=${{ github.event.inputs.env || 'dev' }} \
+            --output json
+
+      - name: Azure logout
+        if: always()
+        run: az logout

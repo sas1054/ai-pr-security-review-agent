@@ -1,0 +1,55 @@
+name: Build & Push to ACR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/build-push.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+
+permissions:
+  id-token: write   # OIDC token for Azure login
+  contents: read
+
+env:
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}   # e.g. acr<prefix><env>.azurecr.io
+  IMAGE_NAME: webhook-receiver
+
+jobs:
+  build-push:
+    name: Build & push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC — no secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
+
+      - name: Build image
+        run: |
+          docker build \
+            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --tag ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest \
+            src/webhook-receiver
+
+      # Skip push on PRs — build only to validate
+      - name: Push image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker push --all-tags ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}
+
+      - name: Azure logout
+        if: always()
+        run: az logout
