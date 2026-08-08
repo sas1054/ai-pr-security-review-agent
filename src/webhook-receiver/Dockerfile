@@ -1,13 +1,9 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/azure-functions/python:4-python3.11
 
-WORKDIR /app
+WORKDIR /home/site/wwwroot
 
-COPY requirements.txt ./
+COPY webhook-receiver/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-
-# Azure Functions custom handler listens on this port
-EXPOSE 80
-
-CMD ["python", "-m", "uvicorn", "function_app:app", "--host", "0.0.0.0", "--port", "80"]
+COPY prsa_control ./prsa_control
+COPY webhook-receiver/ ./

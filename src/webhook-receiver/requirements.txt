@@ -1,6 +1,8 @@
-azure-functions==1.21.3
+# 1.24 is the current stable v1 library line compatible with the Python 3.11
+# Functions runtime.  Keep it explicit so remote builds index decorators with
+# the same SDK contract as local validation.
+azure-functions==1.24.0
 azure-servicebus==7.12.3
-azure-keyvault-secrets==4.8.0
 azure-identity==1.17.1
-fastapi==0.115.5
-uvicorn==0.32.1
+azure-data-tables==12.6.0
+azure-storage-blob==12.24.1

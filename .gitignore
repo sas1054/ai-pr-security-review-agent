@@ -50,3 +50,8 @@ htmlcov/
 *.p12
 secrets.json
 local.settings.json
+
+# Local agent scratch space (virtualenvs, smoke scripts)
+.codex-temp/
+.review-docx/
+

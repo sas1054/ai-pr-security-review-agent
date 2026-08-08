@@ -1,0 +1,23 @@
+{
+  "job": {
+    "job_version": 1,
+    "event_id": "local-fixture-event",
+    "event_type": "git.pullrequest.created",
+    "organization_url": "https://dev.azure.com/example",
+    "project": "Example",
+    "repo_id": "repo-id",
+    "repo_name": "example-service",
+    "pr_id": 1,
+    "source_branch": "refs/heads/feature/example",
+    "target_branch": "refs/heads/main"
+  },
+  "iteration_id": 1,
+  "changed_files": [
+    {
+      "path": "/config.py",
+      "change_type": "edit",
+      "content": "api_key = \"hard-coded-secret-value\"\n"
+    }
+  ],
+  "raw_diff": "diff --git a/config.py b/config.py\n+api_key = \"hard-coded-secret-value\"\n"
+}

@@ -1,25 +1,33 @@
 @description('Name of the Azure OpenAI account')
 param name string
 
-@description('Azure region — must be approved for Azure OpenAI (e.g. eastus, swedencentral)')
+@description('Supported Azure OpenAI Global Standard region for GPT-5.4 mini')
 param location string
 
 @description('Resource tags')
 param tags object
 
 @description('GPT model to deploy')
-param modelName string = 'gpt-4o'
+param modelName string = 'gpt-5.4-mini'
 
 @description('Model version')
-param modelVersion string = '2024-11-20'
+param modelVersion string = '2026-03-17'
 
-@description('Tokens-per-minute capacity (in thousands)')
-param capacityK int = 30
+@description('Tokens-per-minute capacity requested for the pay-as-you-go deployment')
+param capacityK int = 120
+
+@description('Azure OpenAI deployment SKU')
+@allowed([
+  'GlobalStandard'
+  'DataZoneStandard'
+  'Standard'
+])
+param deploymentSkuName string = 'GlobalStandard'
 
 @description('Principal IDs granted Cognitive Services OpenAI User role')
 param openaiUserPrincipalIds array = []
 
-resource openai 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' = {
+resource openai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: name
   location: location
   tags: tags
@@ -30,18 +38,18 @@ resource openai 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' = {
   properties: {
     customSubDomainName: name
     publicNetworkAccess: 'Enabled'
-    disableLocalAuth: false // keep key auth as fallback; managed identity is preferred
+    disableLocalAuth: true // managed identity only
     networkAcls: {
       defaultAction: 'Allow'
     }
   }
 }
 
-resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2023-10-01-preview' = {
+resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
   parent: openai
   name: modelName
   sku: {
-    name: 'Standard'
+    name: deploymentSkuName
     capacity: capacityK
   }
   properties: {

@@ -20,6 +20,9 @@ jobs:
           - service: orchestrator
             dir: src/orchestrator
             requirements: requirements.txt
+          - service: prsa-control
+            dir: src/prsa_control
+            requirements: requirements-dev.txt
 
     steps:
       - name: Checkout
@@ -33,8 +36,49 @@ jobs:
           cache-dependency-path: ${{ matrix.dir }}/${{ matrix.requirements }}
 
       - name: Install dependencies
-        run: pip install -r ${{ matrix.dir }}/${{ matrix.requirements }} pytest
+        run: pip install -r ${{ matrix.dir }}/requirements-dev.txt
 
       - name: Run tests
         working-directory: ${{ matrix.dir }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
         run: pytest -v
+
+      - name: Compile Python sources
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: python -m compileall -q ${{ matrix.dir }} src/prsa_control
+
+  bicep:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Azure CLI
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az bicep build --file infra/main.bicep --stdout > /dev/null
+            az bicep build --file infra/hackathon.bicep --stdout > /dev/null
+            az bicep build --file infra/budget.bicep --stdout > /dev/null
+
+  containers:
+    name: Build container images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: webhook-receiver
+            dockerfile: src/webhook-receiver/Dockerfile
+          - service: webhook-admin
+            dockerfile: src/webhook-receiver/Dockerfile.admin
+          - service: orchestrator
+            dockerfile: src/orchestrator/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.service }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: ${{ matrix.dockerfile }}
+          push: false

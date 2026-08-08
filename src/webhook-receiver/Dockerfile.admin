@@ -1,0 +1,17 @@
+FROM python:3.11-slim-bookworm
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_PROGRESS_BAR=off \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+COPY webhook-receiver/requirements-web.txt ./requirements-web.txt
+COPY webhook-receiver/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements-web.txt
+
+COPY prsa_control ./prsa_control
+COPY webhook-receiver/ ./
+
+EXPOSE 8000
+CMD ["uvicorn", "web_service:api", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

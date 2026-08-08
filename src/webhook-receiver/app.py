@@ -1,21 +1,21 @@
 """
-Webhook receiver — Azure Functions HTTP trigger (US-04)
+Webhook receiver — Azure Functions HTTP trigger (US-04).
 
-Receives Azure DevOps pull request service hook events, validates the HMAC
-signature, and enqueues a PR review job on Service Bus.
-Secrets are read from Key Vault via DefaultAzureCredential (managed identity
-in Azure; az login / env vars locally).
+Receives Azure DevOps pull request service hook events and enqueues a
+versioned PR review job on Service Bus. Request authentication is enforced by
+the Azure Functions host through a Function key; Azure DevOps Web Hooks do not
+produce HMAC signatures.
 """
 
 import hashlib
-import hmac
 import json
 import logging
 import os
+from typing import Any
 
 from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
 from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from prsa_control import get_control_plane
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 _credential: DefaultAzureCredential | None = None
 _sb_client: ServiceBusClient | None = None
-_kv_client: SecretClient | None = None
 
 
 def _get_credential() -> DefaultAzureCredential:
@@ -33,69 +32,34 @@ def _get_credential() -> DefaultAzureCredential:
     return _credential
 
 
-def _get_kv_client() -> SecretClient | None:
-    """Returns None when KV_URI is not set (local dev without Key Vault)."""
-    global _kv_client
-    kv_uri = os.environ.get("KEY_VAULT_URI")
-    if not kv_uri:
-        return None
-    if _kv_client is None:
-        _kv_client = SecretClient(vault_url=kv_uri, credential=_get_credential())
-    return _kv_client
-
-
 def _get_sb_client() -> ServiceBusClient | None:
-    """Returns None when SB_NAMESPACE is not set (local dev without Service Bus)."""
+    """Use a limited connection string in hackathon mode, otherwise managed identity."""
     global _sb_client
+    connection_string = os.environ.get("SERVICE_BUS_CONNECTION_STRING")
     sb_ns = os.environ.get("SERVICE_BUS_NAMESPACE")
-    if not sb_ns:
+    if not connection_string and not sb_ns:
         return None
     if _sb_client is None:
-        _sb_client = ServiceBusClient(
-            fully_qualified_namespace=f"{sb_ns}.servicebus.windows.net",
-            credential=_get_credential(),
-        )
+        if connection_string:
+            _sb_client = ServiceBusClient.from_connection_string(connection_string)
+        else:
+            _sb_client = ServiceBusClient(
+                fully_qualified_namespace=f"{sb_ns}.servicebus.windows.net",
+                credential=_get_credential(),
+            )
     return _sb_client
-
-
-# ── Secret resolution ────────────────────────────────────────────────────────
-
-def _get_webhook_secret() -> str:
-    """
-    Resolution order:
-      1. ADO_WEBHOOK_SECRET env var (local dev / test)
-      2. Key Vault secret 'ado-webhook-secret' (production)
-    """
-    env_val = os.environ.get("ADO_WEBHOOK_SECRET", "")
-    if env_val:
-        return env_val
-    kv = _get_kv_client()
-    if kv:
-        try:
-            return kv.get_secret("ado-webhook-secret").value or ""
-        except Exception:
-            logger.warning("Could not read ado-webhook-secret from Key Vault")
-    return ""
-
-
-# ── Signature validation ─────────────────────────────────────────────────────
-
-def validate_ado_signature(body: bytes, signature_header: str, secret: str) -> bool:
-    """Validates the HMAC-SHA1 signature sent by Azure DevOps service hooks."""
-    if not signature_header or not signature_header.startswith("sha1="):
-        return False
-    expected = hmac.new(secret.encode(), body, hashlib.sha1).hexdigest()
-    received = signature_header.removeprefix("sha1=")
-    return hmac.compare_digest(expected, received)
 
 
 # ── Payload extraction ───────────────────────────────────────────────────────
 
-def build_job_payload(event: dict) -> dict:
-    """Extracts the fields the orchestrator needs from an ADO PR event."""
+def build_job_payload(event: dict, event_id: str | None = None) -> dict:
+    """Extracts the versioned job envelope from an ADO PR event."""
     resource = event.get("resource", {})
     repo = resource.get("repository", {})
+    collection = event.get("resourceContainers", {}).get("collection", {})
     return {
+        "job_version": 1,
+        "event_id": event_id or str(event.get("id") or ""),
         "pr_id": resource.get("pullRequestId"),
         "title": resource.get("title"),
         "source_branch": resource.get("sourceRefName"),
@@ -104,47 +68,101 @@ def build_job_payload(event: dict) -> dict:
         "repo_name": repo.get("name"),
         "project": repo.get("project", {}).get("name"),
         "organization_url": (
-            event.get("resourceContainers", {})
-                 .get("collection", {})
-                 .get("href", "")
+            collection.get("href")
+            or collection.get("baseUrl", "")
                  .rstrip("/")
         ),
         "event_type": event.get("eventType"),
     }
 
 
+def validate_job_payload(job: dict[str, Any]) -> list[str]:
+    """Returns missing required fields before a job is put on the queue."""
+    required = (
+        "event_id",
+        "event_type",
+        "organization_url",
+        "project",
+        "repo_id",
+        "repo_name",
+        "pr_id",
+        "source_branch",
+        "target_branch",
+    )
+    return [name for name in required if job.get(name) in (None, "")]
+
+
 # ── Service Bus enqueue ───────────────────────────────────────────────────────
 
-def enqueue_job(job: dict) -> None:
+def enqueue_job(job: dict) -> bool:
     """
     Sends the job payload to the Service Bus queue.
-    Falls back to a log-only warning when Service Bus is not configured
-    (local dev mode).
+    Raises when Service Bus has not been configured.
     """
     queue_name = os.environ.get("SERVICE_BUS_QUEUE", "pr-review-jobs")
     sb = _get_sb_client()
     if sb is None:
-        logger.warning("SERVICE_BUS_NAMESPACE not set — job not enqueued (dev mode): %s", job)
-        return
+        raise RuntimeError("SERVICE_BUS_NAMESPACE or SERVICE_BUS_CONNECTION_STRING is required")
     with sb.get_queue_sender(queue_name=queue_name) as sender:
         sender.send_messages(ServiceBusMessage(json.dumps(job)))
     logger.info("Enqueued PR #%s to %s", job.get("pr_id"), queue_name)
+    return True
+
+
+def review_run_id(job: dict[str, Any]) -> str:
+    """Create a stable run identifier so duplicate webhook deliveries stay one visible run."""
+    identity = "|".join(
+        str(job.get(key, ""))
+        for key in ("organization_url", "repo_id", "pr_id", "event_id", "event_type")
+    )
+    return f"run-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}"
+
+
+def queue_review_job(job: dict[str, Any], controls: Any | None = None) -> dict[str, Any]:
+    """Persist queued state, enqueue the work, and preserve failures for the monitoring UI."""
+    controls = controls or get_control_plane()
+    queued_job = dict(job)
+    run_id = str(queued_job.get("run_id") or review_run_id(queued_job))
+    queued_job["run_id"] = run_id
+    existing = controls.get_review(run_id)
+    if existing:
+        return {"run_id": run_id, "queued": False, "status": str(existing.get("status", "queued"))}
+
+    controls.record_review_queued(queued_job, run_id)
+    try:
+        enqueue_job(queued_job)
+    except Exception as exc:
+        controls.mark_review_failed(queued_job, run_id, str(exc), enqueue_failed=True)
+        raise
+    return {"run_id": run_id, "queued": True, "status": "queued"}
+
+
+def queue_policy_job(document_id: str, version: str, *, actor: str = "admin", controls: Any | None = None) -> dict[str, Any]:
+    """Persist and enqueue an asynchronous natural-language policy ingestion job."""
+    controls = controls or get_control_plane()
+    record = controls.record_policy_job(document_id, version, actor=actor)
+    job = {
+        "job_version": 1,
+        "job_kind": "policy_ingestion",
+        "job_id": record["job_id"],
+        "document_id": document_id,
+        "policy_version": version,
+    }
+    try:
+        enqueue_job(job)
+    except Exception as exc:
+        controls.update_policy_job(record["job_id"], status="failed", phase="Queue delivery failed", errors=[str(exc)[:1000]])
+        raise
+    return record
 
 
 # ── Main handler ─────────────────────────────────────────────────────────────
 
-def handler(request_body: bytes, headers: dict) -> dict:
+def handler(request_body: bytes) -> dict:
     """
-    Entry point called by the Azure Functions HTTP trigger binding.
+    Business-logic entry point called after Azure Functions host authentication.
     Returns {'status': int, 'body': str}.
     """
-    secret = _get_webhook_secret()
-
-    sig = headers.get("x-hub-signature") or headers.get("X-Hub-Signature", "")
-    if secret and not validate_ado_signature(request_body, sig, secret):
-        logger.warning("Invalid webhook signature — request rejected")
-        return {"status": 401, "body": "Unauthorized"}
-
     try:
         event = json.loads(request_body)
     except json.JSONDecodeError:
@@ -152,11 +170,36 @@ def handler(request_body: bytes, headers: dict) -> dict:
         return {"status": 400, "body": "Bad Request"}
 
     event_type = event.get("eventType", "")
-    if event_type not in ("git.pullrequest.created", "git.pullrequest.updated"):
+    accepted_events = {"git.pullrequest.created"}
+    controls = get_control_plane()
+    configured_updates = os.environ.get("REVIEW_ON_UPDATED_EVENTS")
+    review_on_updates = (
+        configured_updates.lower() == "true"
+        if configured_updates is not None
+        else bool(controls.get_settings().get("review_on_updated", True))
+    )
+    if review_on_updates:
+        accepted_events.add("git.pullrequest.updated")
+    if event_type not in accepted_events:
         return {"status": 200, "body": "OK (ignored)"}
 
-    job = build_job_payload(event)
+    event_id = str(event.get("id") or hashlib.sha256(request_body).hexdigest())
+    job = build_job_payload(event, event_id=event_id)
+    missing = validate_job_payload(job)
+    if missing:
+        logger.error("PR event missing required fields: %s", ", ".join(missing))
+        return {"status": 400, "body": "Bad Request"}
+    if not controls.review_enabled_for(str(job["repo_id"])):
+        logger.info("Review ignored because an administrator disabled this repository")
+        return {"status": 200, "body": "OK (reviews disabled)"}
     logger.info("PR event received: %s / PR #%s", job["repo_name"], job["pr_id"])
 
-    enqueue_job(job)
+    try:
+        queued = queue_review_job(job, controls)
+    except Exception:
+        logger.exception("Could not enqueue PR review job")
+        return {"status": 503, "body": "Service Unavailable"}
+    if not queued["queued"]:
+        logger.info("Duplicate PR event ignored for run_id=%s", queued["run_id"])
+        return {"status": 200, "body": "OK (duplicate)"}
     return {"status": 202, "body": "Accepted"}

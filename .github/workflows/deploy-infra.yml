@@ -16,6 +16,9 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-hackathon-groupc-hvn' }}
+
 jobs:
   deploy:
     name: Bicep deploy
@@ -33,22 +36,80 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Verify target resource group
+        run: az group show --name "$RESOURCE_GROUP" --output none
+
       - name: Bicep what-if
         run: |
-          az deployment sub what-if \
-            --location ${{ vars.AZURE_LOCATION || 'eastus' }} \
-            --template-file infra/main.bicep \
-            --parameters infra/main.bicepparam \
-            --parameters env=${{ github.event.inputs.env }}
-
-      - name: Deploy
-        run: |
-          az deployment sub create \
-            --location ${{ vars.AZURE_LOCATION || 'eastus' }} \
+          az deployment group what-if \
+            --name prsa-${{ github.event.inputs.env }} \
+            --resource-group "$RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters infra/main.bicepparam \
             --parameters env=${{ github.event.inputs.env }} \
+            --parameters alertEmail='${{ vars.ALERT_EMAIL || '' }}' \
+            --parameters openaiLocation=${{ vars.AZURE_OPENAI_LOCATION || 'eastus2' }}
+
+      - name: Deploy
+        run: |
+          az deployment group create \
+            --name prsa-${{ github.event.inputs.env }} \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam \
+            --parameters env=${{ github.event.inputs.env }} \
+            --parameters alertEmail='${{ vars.ALERT_EMAIL || '' }}' \
+            --parameters openaiLocation=${{ vars.AZURE_OPENAI_LOCATION || 'eastus2' }} \
             --output json
+
+      - name: Read deployed Function App name
+        id: deployment
+        shell: bash
+        run: |
+          name=$(az deployment group show \
+            --name prsa-${{ github.event.inputs.env }} \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.outputs.functionAppName.value \
+            --output tsv)
+          echo "function_app_name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble native Function App package
+        shell: bash
+        run: |
+          mkdir -p .artifacts/webhook-receiver
+          cp -R src/webhook-receiver/. .artifacts/webhook-receiver/
+          cp -R src/prsa_control .artifacts/webhook-receiver/prsa_control
+
+      - name: Deploy native Function App source
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ steps.deployment.outputs.function_app_name }}
+          package: .artifacts/webhook-receiver
+
+      - name: Deploy phase-one Cost Management budget
+        if: ${{ vars.ENABLE_COST_BUDGET == 'true' }}
+        shell: bash
+        env:
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL || '' }}
+          MONTHLY_BUDGET: ${{ vars.AZURE_MONTHLY_BUDGET || '25' }}
+        run: |
+          start_date=$(date -u +%Y-%m-01)
+          end_date=$(date -u -d '+10 years' +%Y-%m-%d)
+          parameters=(
+            "name=prsa-phase1-${{ github.event.inputs.env }}"
+            "amount=$MONTHLY_BUDGET"
+            "startDate=$start_date"
+            "endDate=$end_date"
+            "targetResourceGroup=$RESOURCE_GROUP"
+          )
+          if [ -n "$ALERT_EMAIL" ]; then
+            parameters+=("contactEmails=[\"$ALERT_EMAIL\"]")
+          fi
+          az deployment sub create \
+            --name prsa-phase1-budget-${{ github.event.inputs.env }} \
+            --location southeastasia \
+            --template-file infra/budget.bicep \
+            --parameters "${parameters[@]}"
 
       - name: Azure logout
         if: always()

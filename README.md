@@ -5,11 +5,11 @@ An automated security review agent for Azure DevOps pull requests. When a PR is 
 ## Architecture
 
 ```
-Azure DevOps PR → Service Hook → Azure Functions (webhook receiver)
+Azure DevOps PR → Service Hook → Container Apps gateway (scale-to-zero)
                                         ↓
                                   Service Bus
                                         ↓
-                             Container Apps (orchestrator)
+                                  Container Apps Job (orchestrator)
                              ├── Semgrep (diff scan)
                              ├── Secret scan
                              └── Azure OpenAI (triage)
@@ -17,7 +17,7 @@ Azure DevOps PR → Service Hook → Azure Functions (webhook receiver)
                              PR summary + inline comments (advisory)
 ```
 
-**Azure PaaS plumbing:** Functions · Service Bus · Container Apps + KEDA · Cosmos DB · PostgreSQL/pgvector · Redis · Key Vault · App Configuration · Entra ID · App Insights · ACR · Azure OpenAI
+**Azure PaaS plumbing:** Container Apps gateway + Jobs · Service Bus · Key Vault · Entra ID · App Insights · ACR · Azure OpenAI
 
 **Portable containers:** Semgrep · CodeQL · Trivy · orchestration & LLM-reasoning logic (OCI images, runnable on self-hosted runners)
 
@@ -40,31 +40,90 @@ Azure DevOps PR → Service Hook → Azure Functions (webhook receiver)
 - Python 3.11+
 - Azure subscription with Owner/Contributor access
 
+Run the deterministic local fixture first:
+
+```bash
+docker compose up --build --abort-on-container-exit orchestrator
+```
+
+This exercises the job contract and secret scanner without Azure credentials. The real Azure pilot is
+the acceptance gate for Service Bus, Azure DevOps, Azure OpenAI, and PR comment delivery.
+
+For the local admin UI, start the gateway and open
+`http://localhost:8000/api/admin?code=local-admin`. The `local-admin` key exists only in
+`docker-compose.yml`; never use it outside local development.
+
+### Admin control portal
+
+The scale-to-zero Container Apps gateway exposes a clean, low-cost control portal at `/api/admin`.
+In the temporary hackathon profile it is protected by the same private URL key as the webhook, so use
+the private portal URL printed by `configure-hackathon-secrets.ps1` or `show-hackathon-urls.ps1`; do not share it. The portal persists
+its data in the existing Storage account and lets an admin view review history, queue a re-run, enable or disable a
+repository, adjust scan/token limits, create versioned simple rules, and store approved regulation text.
+
+Approved regulations are chunked and searchable today using keyword retrieval. The stored document,
+version, effective date, owner, tags, and chunk identifiers are deliberately shaped for a later Azure AI
+Search hybrid/vector RAG index. Until Entra authentication is configured, this private-URL-key portal is
+for the short-lived pilot only.
+
+See [the policy and RAG design](docs/policy-and-rag.md) for the live data model,
+approval rules, and the planned Azure AI Search migration path.
+
+### Natural-language policies
+
+The portal now provides a governed **Policies → Controls → Exceptions** workflow. Security administrators can paste business-language requirements, upload PDF/DOCX/TXT documents, or ingest a public HTTPS document. The worker preserves source clauses, uses Azure OpenAI to propose typed controls, verifies citations, runs generated positive and negative tests, and requires separate approval and activation before a control can scan a PR. Developers see the policy title, version, clause, exact statement, reason, and suggested action rather than regex or Semgrep implementation details.
+
+Production policy administration supports Microsoft Entra app roles; the existing key-only mode remains for local and temporary hackathon use. See [the policy-engine guide](docs/policy-engine.md) for lifecycle, API, scanner coverage, identity, URL safety, and operational details.
+
 ### 1. Deploy infrastructure
 
 ```bash
 az login
-az deployment sub create \
-  --location eastus \
+az deployment group create \
+  --resource-group rg-hackathon-groupc-hvn \
   --template-file infra/main.bicep \
   --parameters infra/main.bicepparam
 ```
 
-### 2. Build and push the webhook receiver
+### 2. Build and publish the orchestrator
 
 ```bash
-cd src/webhook-receiver
-docker build -t webhook-receiver .
-# Or let CI push to ACR on merge to main
+cd src/orchestrator
+docker build -t orchestrator .
+# CI pushes the orchestrator image to ACR on merge to main.
+# CI also publishes the scale-to-zero webhook/admin gateway image.
 ```
+
+The phase-one defaults keep the gateway and Container Apps Job in **Southeast Asia**, with no
+always-on instances. GPT-5.4 mini is deployed as Azure OpenAI Global Standard in **East US 2**;
+it remains part of the same resource group but processes triage through that supported model region.
+
+The default review budget is up to 100,000 input tokens and 8,000 completion tokens. It is invoked
+only when deterministic scanners find something. Configure a Cost Management budget before the pilot.
+
+### Hackathon deployment profile
+
+`infra/hackathon.bicep` is the temporary low-cost profile for subscriptions where the team cannot grant
+role-assignment permission or modify a central deployment pipeline. It uses a Container Apps gateway
+and event-driven job with zero idle replicas, Basic ACR, and Basic queue-only Service Bus. The job is
+disabled until an image has been pushed, and updated-PR events are ignored to avoid repeat model cost.
+Worker telemetry uses structured logs in this profile; Application Insights remains enabled for the
+Function App without adding the incompatible worker telemetry dependency.
+
+It uses limited keys instead of managed identity: an ADO PAT, a Function-host-key-derived gateway key,
+a Service Bus send/listen key, an Azure OpenAI key, and the temporary ACR admin credential. Only the ADO PAT must
+be supplied locally; the helper reuses the Function host key as the gateway access key and the deployment creates the
+other scoped credentials. Do not commit the PAT or the private webhook URL. See the hackathon
+procedure in the runbook.
 
 ### 3. Configure the Azure DevOps service hook
 
 In your Azure DevOps project → **Project Settings → Service hooks → Create subscription**:
 - Service: **Web Hooks**
-- Trigger: **Pull request created** (+ updated)
-- URL: `https://<functions-app>.azurewebsites.net/api/webhook`
-- Basic auth / HMAC secret: stored in Key Vault as `ado-webhook-secret`
+- Trigger: **Pull request created** (the hackathon profile intentionally ignores updates to limit cost)
+- URL: the complete gateway URL printed by `configure-hackathon-secrets.ps1`, such as
+  `https://<gateway>.southeastasia.azurecontainerapps.io/api/webhook?code=<private-key>`
+- Authentication: private URL key; do not configure Basic Authentication
 
 ## Repository structure
 
@@ -79,24 +138,34 @@ infra/
     key-vault.bicep
     openai.bicep
 src/
-  webhook-receiver/       # Azure Functions app (webhook + Service Bus enqueue)
-    Dockerfile
+  webhook-receiver/       # Webhook/admin gateway (Functions-compatible handlers + Container App)
+    host.json
     app.py
+    function_app.py
+  orchestrator/            # Container Apps event-driven job
+    ado_client.py
+    scanner.py
+    triage.py
+    reporter.py
 .github/
   workflows/
-    build-push.yml        # CI: build image, push to ACR (OIDC, no secrets)
-    deploy-infra.yml      # CD: deploy Bicep on infra/ changes
+    build-push.yml        # CI: build/push orchestrator image to ACR
+    deploy-infra.yml      # CD: deploy Bicep + Function App source
 ```
 
 ## Secrets management
 
-All secrets are stored in **Azure Key Vault**. No credentials are hard-coded.
+The production PAT is stored in **Azure Key Vault**. The temporary hackathon gateway uses one
+private URL key for both the webhook and portal. No credentials are hard-coded.
 
 | Secret name | Description |
 |-------------|-------------|
-| `ado-webhook-secret` | HMAC shared secret for ADO service hook validation |
 | `ado-pat` | Azure DevOps PAT for reading diffs and posting comments |
-| `openai-key` | Fallback key (managed identity is preferred) |
+
+Azure OpenAI uses the Container Apps/Function managed identity; no production API key is required.
+
+The production profile above is deliberately different from the temporary hackathon profile. The
+hackathon profile must be deleted or migrated to managed identity once the event is complete.
 
 The Container Apps managed identity is granted:
 - `Key Vault Secrets User` on Key Vault
