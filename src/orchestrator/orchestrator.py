@@ -290,16 +290,17 @@ def process_review(
         else:
             coverage_gaps.append("Semantic policy controls were active but no semantic scanner was configured")
         represented = {item.control_id for item in semantic_findings}
-        first_file = sorted(scannable)[0]
         for control in manual_controls:
             if control.get("control_type") != "manual_review" or control.get("control_id") in represented:
                 continue
+            # This control matched nothing; it asks for a human decision about the whole change.
+            # Leave it unpositioned so the reporter puts it in the summary instead of blaming a file.
             findings.append(
                 Finding(
                     tool="policy-manual-review",
                     rule_id=str(control.get("control_id") or "manual-review"),
-                    file=first_file if first_file.startswith("/") else f"/{first_file}",
-                    line=1,
+                    file="",
+                    line=0,
                     severity="WARNING",
                     message=f"Human review required: {control.get('title', 'policy control')}",
                     fix_hint=str(control.get("fix_hint") or "Have Security Engineering review this change."),
@@ -310,8 +311,9 @@ def process_review(
                     policy_version=str(control.get("policy_version") or ""),
                     source_reference=dict(control.get("source_reference") or {}),
                     confidence=0.0,
-                    matched_value="Automated enforcement is insufficient",
+                    matched_value="",
                     review_required=True,
+                    inline_comment=False,
                 )
             )
     for finding in findings:

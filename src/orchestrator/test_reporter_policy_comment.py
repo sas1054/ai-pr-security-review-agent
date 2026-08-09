@@ -87,3 +87,14 @@ def test_policy_comment_escapes_untrusted_policy_and_code_text():
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
     assert "&amp;" in body
     assert "\\`; rm -rf /" in body
+
+
+def test_manual_review_comment_says_it_matched_nothing_instead_of_faking_evidence():
+    body = AdoReporter._policy_body(_finding(matched_value="", confidence=0.0), "", None)
+
+    assert "Matched evidence" not in body
+    assert "cannot be checked automatically" in body
+    assert "asks for a human decision" in body
+    # The citation must still be intact so the developer knows which policy asked for the review.
+    assert "**Policy:** Sanctions and Geographic Restrictions, version 2026-01" in body
+    assert "**Policy statement:**" in body

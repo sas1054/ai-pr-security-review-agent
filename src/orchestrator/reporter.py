@@ -35,9 +35,14 @@ class AdoReporter:
             )
             if part
         ) or "source clause recorded with the control"
+        evidence = (
+            f"Matched evidence: `{safe(finding.matched_value)}`\n\n"
+            if finding.matched_value
+            else "This control cannot be checked automatically; it asks for a human decision.\n\n"
+        )
         return (
             f"{marker}\n**{safe(finding.severity)} — {safe(finding.message)}**\n\n"
-            f"Matched evidence: `{safe(finding.matched_value)}`\n\n"
+            f"{evidence}"
             f"**Policy:** {safe(finding.policy_document)}, version {safe(finding.policy_version)}\n\n"
             f"**Source:** {location}\n\n"
             f"**Policy statement:** “{safe(source.get('excerpt'))}”\n\n"
@@ -150,7 +155,10 @@ class AdoReporter:
         if policy_unpositioned:
             summary += "\n\nPolicy evidence for findings outside this diff:\n"
             for finding in policy_unpositioned:
-                summary += "\n" + self._policy_body(finding, "", None) + f"\n\nRepository location: `{finding.file}:{finding.line}`\n"
+                summary += "\n" + self._policy_body(finding, "", None)
+                if finding.file:
+                    summary += f"\n\nRepository location: `{finding.file}:{finding.line}`"
+                summary += "\n"
         summary_content = (
             f"{marker}\n## AI PR Security Review\n\n{summary}\n\n"
             f"Findings: {len(result.findings)} | Run: `{result.run_id}`"

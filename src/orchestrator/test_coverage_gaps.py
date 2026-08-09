@@ -166,6 +166,31 @@ def test_manual_review_control_always_raises_a_human_review_finding():
     assert finding.review_required is True
 
 
+def test_manual_review_finding_is_not_pinned_to_an_arbitrary_changed_file():
+    """It matched nothing, so it must not look like an accusation about one file."""
+    plane = _plane()
+    _activate(plane, "crypto.terminology-review", "manual_review")
+
+    class _Silent:
+        def scan(self, files, controls):
+            return []
+
+    result = _review(
+        plane,
+        [
+            ChangedFile("/Dockerfile", "edit", "FROM ubuntu:latest\n"),
+            ChangedFile("/wallet.py", "edit", "settle_on_chain()\n"),
+        ],
+        semantic_scanner=_Silent(),
+    )
+
+    [finding] = result.findings
+    assert finding.file == ""
+    assert finding.line == 0
+    assert finding.matched_value == ""
+    assert finding.inline_comment is False
+
+
 def test_supplemental_file_fetch_failure_is_declared_as_a_gap():
     plane = _plane()
     _activate(plane, "crypto.prohibited-dependencies", "dependency", {"packages": ["web3"]})
