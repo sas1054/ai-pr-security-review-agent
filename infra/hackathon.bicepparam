@@ -10,6 +10,7 @@ param prefix = 'prsa'
 param deployWorkerJob = false
 param deployGateway = false
 param gatewayImageTag = 'latest'
+param enableAdminEntraAuth = false
 param openaiCapacityK = 120
 param llmMaxInputTokens = 100000
 param llmMaxOutputTokens = 8000

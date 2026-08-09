@@ -80,13 +80,15 @@ and updating the service-hook URL.
 
 ## Admin control portal
 
-The same helper prints a second private URL for `/api/admin`. It gives the hackathon administrator a
+The same helper prints the clean `/api/admin` URL. Opening it starts the tenant's Microsoft Entra login;
+only users or groups assigned an application role can sign in. It gives an authorized administrator a
 simple portal for review history, manual re-runs, repository controls, rule packs, regulation documents,
 and scan/token settings. It uses the existing Container Apps environment and Storage account with zero
 minimum replicas, so it has no always-on compute cost.
 
-The Function key is appropriate only for the short-lived, single-admin pilot. Before onboarding other
-users, move the portal to Microsoft Entra authentication and give admin identities a dedicated role.
+The webhook's private URL key does not authorize the portal. Assign least-privilege roles such as
+`Policy.Author`, `Policy.Approver`, `Policy.Activator`, and `Exception.Approver`; reserve `Policy.Admin`
+for full administrators.
 
 ## Storing secrets in Key Vault
 

@@ -21,8 +21,21 @@ param acrUsername string
 param acrPassword string
 
 @secure()
-@description('Shared Function-key-derived access key for the service hook and temporary portal')
+@description('Shared Function-key-derived access key for the Azure DevOps service hook')
 param accessKey string
+
+@description('Enable Microsoft Entra authentication for browser-facing admin routes')
+param enableAdminEntraAuth bool = false
+
+@description('Microsoft Entra application client ID used by Container Apps authentication')
+param adminEntraClientId string = ''
+
+@description('Microsoft Entra tenant ID used by Container Apps authentication')
+param adminEntraTenantId string = ''
+
+@secure()
+@description('Microsoft Entra application client secret used by Container Apps authentication')
+param adminEntraClientSecret string = ''
 
 @secure()
 @description('Storage connection string for the control-plane data')
@@ -38,6 +51,20 @@ param serviceBusQueue string
 @description('Resource tags')
 param tags object
 
+var entraSecrets = enableAdminEntraAuth ? [
+  {
+    name: 'entra-client-secret'
+    value: adminEntraClientSecret
+  }
+] : []
+
+var entraEnvironment = enableAdminEntraAuth ? [
+  {
+    name: 'MICROSOFT_PROVIDER_AUTHENTICATION_SECRET'
+    secretRef: 'entra-client-secret'
+  }
+] : []
+
 resource gateway 'Microsoft.App/containerApps@2025-07-01' = {
   name: name
   location: location
@@ -46,7 +73,7 @@ resource gateway 'Microsoft.App/containerApps@2025-07-01' = {
     environmentId: environmentId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: [
+      secrets: concat([
         {
           name: 'gateway-access-key'
           value: accessKey
@@ -63,7 +90,7 @@ resource gateway 'Microsoft.App/containerApps@2025-07-01' = {
           name: 'acr-password'
           value: acrPassword
         }
-      ]
+      ], entraSecrets)
       ingress: {
         external: true
         targetPort: 8000
@@ -93,10 +120,14 @@ resource gateway 'Microsoft.App/containerApps@2025-07-01' = {
             cpu: json('0.25')
             memory: '0.5Gi'
           }
-          env: [
+          env: concat([
             {
               name: 'ADMIN_ACCESS_KEY'
               secretRef: 'gateway-access-key'
+            }
+            {
+              name: 'ADMIN_REQUIRE_ENTRA'
+              value: string(enableAdminEntraAuth)
             }
             {
               name: 'AZURE_STORAGE_CONNECTION_STRING'
@@ -122,12 +153,44 @@ resource gateway 'Microsoft.App/containerApps@2025-07-01' = {
               name: 'REVIEW_ON_UPDATED_EVENTS'
               value: 'false'
             }
-          ]
+          ], entraEnvironment)
         }
       ]
       scale: {
         minReplicas: 0
         maxReplicas: 1
+      }
+    }
+  }
+}
+
+resource gatewayAuth 'Microsoft.App/containerApps/authConfigs@2025-07-01' = if (enableAdminEntraAuth) {
+  parent: gateway
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'AllowAnonymous'
+      excludedPaths: [
+        '/health'
+        '/api/webhook'
+      ]
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: adminEntraClientId
+          clientSecretSettingName: 'MICROSOFT_PROVIDER_AUTHENTICATION_SECRET'
+          openIdIssuer: '${environment().authentication.loginEndpoint}${adminEntraTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            adminEntraClientId
+          ]
+        }
       }
     }
   }

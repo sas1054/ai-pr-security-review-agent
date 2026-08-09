@@ -79,6 +79,16 @@ Write-Host "  URL: https://$gatewayHost/api/webhook?code=$encodedWebhookKey"
 Write-Host '  Trigger: Pull request created'
 Write-Host '  Authentication: the private URL key; do not add Basic Authentication.'
 Write-Host ''
-Write-Host 'Admin control portal (keep this URL private):'
-Write-Host "  https://$gatewayHost/api/admin?code=$encodedWebhookKey"
+$entraRequired = (& az containerapp show `
+    --resource-group $ResourceGroup `
+    --name $GatewayApp `
+    --query "properties.template.containers[0].env[?name=='ADMIN_REQUIRE_ENTRA'].value | [0]" `
+    --output tsv).Trim() -eq 'true'
+if ($entraRequired) {
+    Write-Host 'Admin control portal (Microsoft Entra login):'
+    Write-Host "  https://$gatewayHost/api/admin"
+} else {
+    Write-Host 'Admin control portal (keep this URL private):'
+    Write-Host "  https://$gatewayHost/api/admin?code=$encodedWebhookKey"
+}
 Write-Host 'The worker remains scale-to-zero until that hook sends a valid PR event.'

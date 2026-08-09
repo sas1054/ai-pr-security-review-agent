@@ -13,7 +13,7 @@ from typing import Callable
 
 import azure.functions as func
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
 from admin import (
     audit_events,
@@ -37,13 +37,23 @@ from app import handler
 api = FastAPI(title="PR Security Control", docs_url=None, redoc_url=None, openapi_url=None)
 
 
-def _require_access(request: Request) -> None:
+def _require_webhook_key(request: Request) -> None:
     expected = os.environ.get("ADMIN_ACCESS_KEY", "")
     provided = request.query_params.get("code", "")
     if not expected:
         raise HTTPException(status_code=503, detail="Gateway access key is not configured.")
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _require_admin_access(request: Request) -> None:
+    if os.environ.get("ADMIN_REQUIRE_ENTRA", "false").lower() == "true":
+        if not request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME", "").strip() and not request.headers.get(
+            "X-MS-CLIENT-PRINCIPAL", ""
+        ).strip():
+            raise HTTPException(status_code=401, detail="Microsoft Entra authentication is required")
+        return
+    _require_webhook_key(request)
 
 
 async def _function_request(request: Request) -> func.HttpRequest:
@@ -75,7 +85,7 @@ async def health() -> dict[str, str]:
 
 @api.post("/api/webhook")
 async def webhook(request: Request) -> Response:
-    _require_access(request)
+    _require_webhook_key(request)
     result = handler(await request.body())
     return Response(content=result["body"], status_code=result["status"], media_type="text/plain")
 
@@ -83,7 +93,12 @@ async def webhook(request: Request) -> Response:
 @api.get("/api/admin")
 @api.get("/api/admin/")
 async def admin_portal(request: Request) -> Response:
-    _require_access(request)
+    if os.environ.get("ADMIN_REQUIRE_ENTRA", "false").lower() == "true" and not (
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME", "").strip()
+        or request.headers.get("X-MS-CLIENT-PRINCIPAL", "").strip()
+    ):
+        return RedirectResponse(url="/.auth/login/aad?post_login_redirect_uri=/api/admin", status_code=302)
+    _require_admin_access(request)
     return _response(portal(await _function_request(request)))
 
 
@@ -107,7 +122,7 @@ _ADMIN_ENDPOINTS: dict[str, Callable[[func.HttpRequest], func.HttpResponse]] = {
 
 @api.api_route("/api/admin/api/{endpoint}", methods=["GET", "POST"])
 async def admin_api(endpoint: str, request: Request) -> Response:
-    _require_access(request)
+    _require_admin_access(request)
     handler_fn = _ADMIN_ENDPOINTS.get(endpoint)
     if handler_fn is None:
         raise HTTPException(status_code=404, detail="Not Found")

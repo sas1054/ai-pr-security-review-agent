@@ -56,15 +56,15 @@ For the local admin UI, start the gateway and open
 ### Admin control portal
 
 The scale-to-zero Container Apps gateway exposes a clean, low-cost control portal at `/api/admin`.
-In the temporary hackathon profile it is protected by the same private URL key as the webhook, so use
-the private portal URL printed by `configure-hackathon-secrets.ps1` or `show-hackathon-urls.ps1`; do not share it. The portal persists
+The deployed portal uses single-tenant Microsoft Entra login and app-role assignment; the Azure DevOps
+webhook continues to use its separate private URL key. Use the clean portal URL printed by
+`configure-hackathon-secrets.ps1` or `show-hackathon-urls.ps1`. The portal persists
 its data in the existing Storage account and lets an admin view review history, queue a re-run, enable or disable a
 repository, adjust scan/token limits, create versioned simple rules, and store approved regulation text.
 
 Approved regulations are chunked and searchable today using keyword retrieval. The stored document,
 version, effective date, owner, tags, and chunk identifiers are deliberately shaped for a later Azure AI
-Search hybrid/vector RAG index. Until Entra authentication is configured, this private-URL-key portal is
-for the short-lived pilot only.
+Search hybrid/vector RAG index. The key-only portal mode remains available only for local development.
 
 See [the policy and RAG design](docs/policy-and-rag.md) for the live data model,
 approval rules, and the planned Azure AI Search migration path.
@@ -73,7 +73,7 @@ approval rules, and the planned Azure AI Search migration path.
 
 The portal now provides a governed **Policies → Controls → Exceptions** workflow. Security administrators can paste business-language requirements, upload PDF/DOCX/TXT documents, or ingest a public HTTPS document. The worker preserves source clauses, uses Azure OpenAI to propose typed controls, verifies citations, maps every obligation to declared PR scan surfaces, runs generated positive and negative tests, and requires separate approval and activation before a control can scan a PR. Missing adapters, uncovered obligations, and detector vocabulary absent from the policy fail into visible clarification or partial coverage instead of being treated as compliance. Developers see the policy title, version, clause, exact statement, reason, and suggested action rather than regex or Semgrep implementation details.
 
-Production policy administration supports Microsoft Entra app roles; the existing key-only mode remains for local and temporary hackathon use. See [the policy-engine guide](docs/policy-engine.md) for lifecycle, API, scanner coverage, identity, URL safety, and operational details.
+Policy administration supports Microsoft Entra app roles; the existing key-only mode remains for local development. See [the policy-engine guide](docs/policy-engine.md) for lifecycle, API, scanner coverage, identity, URL safety, and operational details.
 
 ### 1. Deploy infrastructure
 

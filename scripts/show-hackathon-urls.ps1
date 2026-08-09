@@ -23,6 +23,11 @@ $gatewayHost = (& az containerapp show `
     --name $GatewayApp `
     --query 'properties.configuration.ingress.fqdn' `
     --output tsv).Trim()
+$entraRequired = (& az containerapp show `
+    --resource-group $ResourceGroup `
+    --name $GatewayApp `
+    --query "properties.template.containers[0].env[?name=='ADMIN_REQUIRE_ENTRA'].value | [0]" `
+    --output tsv).Trim() -eq 'true'
 
 if ([string]::IsNullOrWhiteSpace($accessKey) -or [string]::IsNullOrWhiteSpace($gatewayHost)) {
     throw 'Could not read the private gateway access details.'
@@ -30,5 +35,9 @@ if ([string]::IsNullOrWhiteSpace($accessKey) -or [string]::IsNullOrWhiteSpace($g
 
 $code = [Uri]::EscapeDataString($accessKey)
 Write-Host 'Keep these URLs private:'
-Write-Host "  Admin portal: https://$gatewayHost/api/admin?code=$code"
+if ($entraRequired) {
+    Write-Host "  Admin portal: https://$gatewayHost/api/admin (Microsoft Entra login)"
+} else {
+    Write-Host "  Admin portal: https://$gatewayHost/api/admin?code=$code"
+}
 Write-Host "  ADO webhook:  https://$gatewayHost/api/webhook?code=$code"

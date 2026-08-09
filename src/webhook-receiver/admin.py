@@ -1,9 +1,8 @@
-"""Function-key-protected admin control plane for the hackathon portal.
+"""Identity-aware admin control plane for the policy portal.
 
-The route is deliberately separate from the webhook business handler.  For the
-short-lived deployment it is protected by a Function key.  A production portal
-should move these routes behind Microsoft Entra authentication before broader
-rollout.
+The route is deliberately separate from the webhook business handler. Hosted
+deployments use Microsoft Entra authentication and role claims; a shared-key
+fallback remains available for local development only.
 """
 
 from __future__ import annotations
@@ -88,7 +87,8 @@ def _body(req: func.HttpRequest) -> dict[str, Any]:
     return value
 
 
-def portal(_: func.HttpRequest) -> func.HttpResponse:
+def portal(req: func.HttpRequest) -> func.HttpResponse:
+    _actor(req)
     return func.HttpResponse(
         PORTAL_FILE.read_text(encoding="utf-8"),
         status_code=200,
@@ -97,8 +97,11 @@ def portal(_: func.HttpRequest) -> func.HttpResponse:
     )
 
 
-def dashboard(_: func.HttpRequest) -> func.HttpResponse:
-    return _json_response(get_control_plane().dashboard())
+def dashboard(req: func.HttpRequest) -> func.HttpResponse:
+    actor = _actor(req)
+    value = get_control_plane().dashboard()
+    value["identity"] = {"name": actor, "roles": sorted(_roles(req))}
+    return _json_response(value)
 
 
 def settings(req: func.HttpRequest) -> func.HttpResponse:

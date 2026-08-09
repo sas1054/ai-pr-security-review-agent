@@ -29,15 +29,28 @@ param imageTag string = 'latest'
 @description('Deploy the queue-triggered worker. Keep false until the image is in ACR.')
 param deployWorkerJob bool = false
 
-@description('Deploy the external webhook and admin gateway after its image and temporary access key are available.')
+@description('Deploy the external webhook and admin gateway after its image and webhook access key are available.')
 param deployGateway bool = false
 
 @description('Container image tag for the webhook and admin gateway.')
 param gatewayImageTag string = 'latest'
 
 @secure()
-@description('Temporary shared access key for Azure DevOps Web Hooks and the admin portal.')
+@description('Shared access key for Azure DevOps Web Hooks. The browser portal uses Entra when enabled.')
 param gatewayAccessKey string = ''
+
+@description('Enable Microsoft Entra login for the browser-facing admin portal.')
+param enableAdminEntraAuth bool = false
+
+@description('Microsoft Entra application client ID for the admin portal.')
+param adminEntraClientId string = ''
+
+@description('Microsoft Entra tenant ID for the admin portal.')
+param adminEntraTenantId string = subscription().tenantId
+
+@secure()
+@description('Microsoft Entra application client secret for Container Apps authentication.')
+param adminEntraClientSecret string = ''
 
 @secure()
 @description('Azure DevOps PAT used only by the worker to read and report on pull requests')
@@ -221,6 +234,10 @@ module gateway './modules/container-app-gateway-hackathon.bicep' = if (deployGat
     acrUsername: acr.outputs.username
     acrPassword: acr.outputs.password
     accessKey: gatewayAccessKey
+    enableAdminEntraAuth: enableAdminEntraAuth
+    adminEntraClientId: adminEntraClientId
+    adminEntraTenantId: adminEntraTenantId
+    adminEntraClientSecret: adminEntraClientSecret
     storageConnectionString: storage.outputs.connectionString
     serviceBusConnectionString: serviceBus.outputs.connectionString
     serviceBusQueue: serviceBus.outputs.queueName
