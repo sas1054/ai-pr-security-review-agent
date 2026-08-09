@@ -33,6 +33,210 @@ class PolicyEngineError(RuntimeError):
     pass
 
 
+CONFIDENCE_LABELS = {
+    "none": 0.0,
+    "unknown": 0.0,
+    "low": 0.25,
+    "medium": 0.5,
+    "moderate": 0.5,
+    "high": 0.85,
+    "very high": 0.95,
+}
+
+SOURCE_REFERENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "clause_id": {"type": "string"},
+        "page": {"type": ["integer", "null"]},
+        "section": {"type": ["string", "null"]},
+        "paragraph": {"type": ["integer", "null"]},
+        "excerpt": {"type": "string"},
+    },
+    "required": ["clause_id", "page", "section", "paragraph", "excerpt"],
+    "additionalProperties": False,
+}
+
+STRING_ARRAY_SCHEMA = {"type": "array", "items": {"type": "string"}}
+
+POLICY_PROPOSAL_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "policy_control_proposal",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "controls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "obligation_ids": STRING_ARRAY_SCHEMA,
+                            "control_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "prohibited_condition": {"type": "string"},
+                            "control_type": {"type": "string", "enum": ["literal_value", "pattern", "ast", "dependency", "url_domain", "config_iac", "semantic_review", "manual_review"]},
+                            "severity": {"type": "string"},
+                            "scope": {
+                                "type": "object",
+                                "properties": {key: STRING_ARRAY_SCHEMA for key in ("file_globs", "exclude_globs", "repositories", "branches", "environments")},
+                                "required": ["file_globs", "exclude_globs", "repositories", "branches", "environments"],
+                                "additionalProperties": False,
+                            },
+                            "exclusions": STRING_ARRAY_SCHEMA,
+                            "clarification_questions": STRING_ARRAY_SCHEMA,
+                            "source_reference": SOURCE_REFERENCE_SCHEMA,
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                            "match": {
+                                "type": "object",
+                                "properties": {
+                                    **{key: STRING_ARRAY_SCHEMA for key in ("prohibited_values", "aliases", "field_names", "patterns", "packages", "package_prefixes", "domains", "file_globs", "exclude_globs")},
+                                    "semgrep_yaml": {"type": "string"},
+                                },
+                                "required": ["prohibited_values", "aliases", "field_names", "patterns", "packages", "package_prefixes", "domains", "file_globs", "exclude_globs", "semgrep_yaml"],
+                                "additionalProperties": False,
+                            },
+                            "detector_provenance": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"value": {"type": "string"}, "source_kind": {"type": "string"}, "reference": {"type": "string"}},
+                                    "required": ["value", "source_kind", "reference"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "tests": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}, "file": {"type": "string"}, "content": {"type": "string"}, "should_match": {"type": "boolean"}},
+                                    "required": ["name", "file", "content", "should_match"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["obligation_ids", "control_id", "title", "description", "prohibited_condition", "control_type", "severity", "scope", "exclusions", "clarification_questions", "source_reference", "confidence", "match", "detector_provenance", "tests"],
+                        "additionalProperties": False,
+                    },
+                },
+                "obligations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "obligation_id": {"type": "string"},
+                            "statement": {"type": "string"},
+                            "source_reference": SOURCE_REFERENCE_SCHEMA,
+                            "enforceability": {"type": "string"},
+                            "detection_surfaces": STRING_ARRAY_SCHEMA,
+                            "clarification_questions": STRING_ARRAY_SCHEMA,
+                        },
+                        "required": ["obligation_id", "statement", "source_reference", "enforceability", "detection_surfaces", "clarification_questions"],
+                        "additionalProperties": False,
+                    },
+                },
+                "exceptions": STRING_ARRAY_SCHEMA,
+                "effective_dates": STRING_ARRAY_SCHEMA,
+                "defined_terms": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"term": {"type": "string"}, "definition": {"type": "string"}},
+                        "required": ["term", "definition"],
+                        "additionalProperties": False,
+                    },
+                },
+                "document_scope": STRING_ARRAY_SCHEMA,
+            },
+            "required": ["controls", "obligations", "exceptions", "effective_dates", "defined_terms", "document_scope"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _string_list(value: Any) -> list[str]:
+    return [str(item).strip() for item in _list(value) if str(item).strip()]
+
+
+def _normalize_confidence(value: Any) -> float:
+    if isinstance(value, str):
+        normalized = value.strip().lower().replace("_", " ").replace("-", " ")
+        if normalized in CONFIDENCE_LABELS:
+            return CONFIDENCE_LABELS[normalized]
+    try:
+        return min(1.0, max(0.0, float(value or 0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _recover_source(value: Any, clauses: list[dict[str, Any]]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        excerpt = value.strip()
+        for clause in clauses:
+            if excerpt in str(clause.get("excerpt") or ""):
+                return {**clause, "excerpt": excerpt}
+    return dict(clauses[0]) if clauses else {}
+
+
+def _normalize_model_proposal(proposal: Any, clauses: list[dict[str, Any]]) -> dict[str, Any]:
+    """Make untrusted model JSON safe and turn shape defects into clarifications."""
+    if not isinstance(proposal, dict):
+        proposal = {}
+    normalized = dict(proposal)
+    obligations: list[dict[str, Any]] = []
+    for item in _list(proposal.get("obligations")):
+        raw = dict(item) if isinstance(item, dict) else {"statement": str(item)}
+        questions = _string_list(raw.get("clarification_questions"))
+        if not isinstance(raw.get("source_reference"), dict):
+            questions.append("The generated obligation citation was malformed; confirm the cited policy clause.")
+        raw["source_reference"] = _recover_source(raw.get("source_reference"), clauses)
+        raw["detection_surfaces"] = _string_list(raw.get("detection_surfaces", raw.get("surfaces")))
+        raw["clarification_questions"] = list(dict.fromkeys(questions))
+        obligations.append(raw)
+    controls: list[dict[str, Any]] = []
+    for item in _list(proposal.get("controls")):
+        if not isinstance(item, dict):
+            continue
+        raw = dict(item)
+        questions = _string_list(raw.get("clarification_questions"))
+        for field in ("scope", "match"):
+            if not isinstance(raw.get(field), dict):
+                if raw.get(field) not in (None, {}, ""):
+                    questions.append(f"The generated {field} was malformed; define it before approving this control.")
+                raw[field] = {}
+        if not isinstance(raw.get("source_reference"), dict):
+            questions.append("The generated control citation was malformed; confirm the cited policy clause.")
+        raw["source_reference"] = _recover_source(raw.get("source_reference"), clauses)
+        for field in ("obligation_ids", "exclusions", "detection_surfaces"):
+            raw[field] = _string_list(raw.get(field))
+        raw["detector_provenance"] = [value for value in _list(raw.get("detector_provenance")) if isinstance(value, dict)]
+        raw["tests"] = [value for value in _list(raw.get("tests")) if isinstance(value, dict)]
+        raw["confidence"] = _normalize_confidence(raw.get("confidence"))
+        raw["clarification_questions"] = list(dict.fromkeys(questions))[:25]
+        controls.append(raw)
+    normalized["obligations"] = obligations
+    normalized["controls"] = controls
+    for field in ("exceptions", "effective_dates"):
+        normalized[field] = _list(proposal.get(field))
+    defined_terms = proposal.get("defined_terms")
+    if isinstance(defined_terms, list):
+        defined_terms = {
+            str(item.get("term")): str(item.get("definition"))
+            for item in defined_terms
+            if isinstance(item, dict) and item.get("term")
+        }
+    normalized["defined_terms"] = defined_terms if isinstance(defined_terms, dict) else {}
+    return normalized
+
+
 @dataclass
 class Extraction:
     text: str
@@ -266,6 +470,7 @@ def assess_policy_proposal(proposal: dict[str, Any], clauses: list[dict[str, Any
     obligation and declared scan surface, and that concrete detector vocabulary is
     either quoted by the policy or explicitly sent back for human clarification.
     """
+    proposal = _normalize_model_proposal(proposal, clauses)
     controls = [dict(item) for item in proposal.get("controls", []) if isinstance(item, dict)]
     obligations: list[dict[str, Any]] = []
     for index, item in enumerate(proposal.get("obligations", []), 1):
@@ -274,7 +479,7 @@ def assess_policy_proposal(proposal: dict[str, Any], clauses: list[dict[str, Any
         surfaces = sorted(
             {
                 _canonical_surface(value)
-                for value in raw.get("detection_surfaces", raw.get("surfaces", []))
+                for value in _list(raw.get("detection_surfaces", raw.get("surfaces", [])))
                 if _canonical_surface(value) in CANONICAL_SURFACES
             }
         )
@@ -305,7 +510,7 @@ def assess_policy_proposal(proposal: dict[str, Any], clauses: list[dict[str, Any
     obligation_ids = {item["obligation_id"] for item in obligations}
     by_obligation: dict[str, list[dict[str, Any]]] = {item: [] for item in obligation_ids}
     for index, control in enumerate(controls):
-        linked = [str(item) for item in control.get("obligation_ids", []) if str(item) in obligation_ids]
+        linked = [str(item) for item in _list(control.get("obligation_ids")) if str(item) in obligation_ids]
         if not linked and len(obligations) == 1:
             linked = [obligations[0]["obligation_id"]]
         if not linked:
@@ -317,8 +522,8 @@ def assess_policy_proposal(proposal: dict[str, Any], clauses: list[dict[str, Any
             ]
         control["obligation_ids"] = sorted(set(linked))
         control["detection_surfaces"] = sorted(CONTROL_TYPE_SURFACES.get(str(control.get("control_type") or ""), set()))
-        questions = [str(item).strip() for item in control.get("clarification_questions", []) if str(item).strip()]
-        source_reference = control.get("source_reference") or {}
+        questions = _string_list(control.get("clarification_questions"))
+        source_reference = control.get("source_reference") if isinstance(control.get("source_reference"), dict) else {}
         source_text = str(source_reference.get("excerpt") or "").casefold()
         source_clause_id = str(source_reference.get("clause_id") or "")
         source_text += " " + " ".join(
@@ -488,7 +693,7 @@ class AzureOpenAIPolicyInterpreter:
                     model=self.deployment,
                     max_completion_tokens=min(int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8000")), 16000),
                     reasoning_effort=effort,
-                    response_format={"type": "json_object"},
+                    response_format=POLICY_PROPOSAL_RESPONSE_FORMAT,
                     messages=[
                         {"role": "developer", "content": prompt},
                         {
@@ -514,7 +719,7 @@ class AzureOpenAIPolicyInterpreter:
                 raise PolicyEngineError("Azure OpenAI returned invalid policy JSON") from exc
             if not isinstance(result, dict) or not isinstance(result.get("controls"), list):
                 raise PolicyEngineError("Policy proposal must contain a controls array")
-            results.append(result)
+            results.append(_normalize_model_proposal(result, clauses))
 
         merged: dict[str, Any] = {
             "controls": [], "obligations": [], "exceptions": [], "effective_dates": [], "defined_terms": {}, "document_scope": []
@@ -681,7 +886,9 @@ class AzureOpenAISemanticControlScanner:
 
 
 def _verified_source(raw: dict[str, Any], clauses: list[dict[str, Any]]) -> dict[str, Any]:
-    source = raw.get("source_reference") or {}
+    source = raw.get("source_reference")
+    if not isinstance(source, dict):
+        raise PolicyEngineError("Generated control contains a malformed policy citation")
     excerpt = str(source.get("excerpt") or "").strip()
     clause_id = str(source.get("clause_id") or "")
     for clause in clauses:
@@ -702,8 +909,8 @@ def compile_proposal(raw: dict[str, Any], policy: dict[str, Any], clauses: list[
         for key, value in match.items()
         if key in {"prohibited_values", "aliases", "field_names", "patterns", "packages", "package_prefixes", "domains", "file_globs", "exclude_globs", "semgrep_yaml"}
     }
-    tests = [item for item in raw.get("tests", []) if isinstance(item, dict)]
-    questions = [str(item).strip() for item in raw.get("clarification_questions", []) if str(item).strip()]
+    tests = [item for item in _list(raw.get("tests")) if isinstance(item, dict)]
+    questions = _string_list(raw.get("clarification_questions"))
     source = _verified_source(raw, clauses)
     if kind == "ast" and detector.get("semgrep_yaml"):
         try:
@@ -728,9 +935,9 @@ def compile_proposal(raw: dict[str, Any], policy: dict[str, Any], clauses: list[
         "description": str(raw.get("description") or ""),
         "prohibited_condition": str(raw.get("prohibited_condition") or ""),
         "control_type": kind,
-        "obligation_ids": [str(item) for item in raw.get("obligation_ids", []) if str(item)],
-        "detection_surfaces": [str(item) for item in raw.get("detection_surfaces", []) if str(item)],
-        "detector_provenance": [item for item in raw.get("detector_provenance", []) if isinstance(item, dict)],
+        "obligation_ids": _string_list(raw.get("obligation_ids")),
+        "detection_surfaces": _string_list(raw.get("detection_surfaces")),
+        "detector_provenance": [item for item in _list(raw.get("detector_provenance")) if isinstance(item, dict)],
         "generated_coverage_placeholder": bool(raw.get("generated_coverage_placeholder")),
         "severity": _normalize_severity(raw.get("severity")),
         "scope": raw.get("scope") if isinstance(raw.get("scope"), dict) else {},
@@ -738,14 +945,14 @@ def compile_proposal(raw: dict[str, Any], policy: dict[str, Any], clauses: list[
             "positive": [item.get("content", "") for item in tests if item.get("should_match") is True],
             "negative": [item.get("content", "") for item in tests if item.get("should_match") is False],
         },
-        "exclusions": [str(item) for item in raw.get("exclusions", [])],
+        "exclusions": _string_list(raw.get("exclusions")),
         "clarification_questions": questions,
         "policy_document_id": policy["document_id"],
         "policy_version": policy["version"],
         "policy_title": policy["title"],
         "source_reference": source,
         "detector": detector,
-        "confidence": min(1.0, max(0.0, float(raw.get("confidence") or 0))),
+        "confidence": _normalize_confidence(raw.get("confidence")),
         "fix_hint": str(raw.get("fix_hint") or "Use an approved alternative or request a documented exception."),
         "state": "needs_clarification" if questions else "draft",
     }

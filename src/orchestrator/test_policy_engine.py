@@ -172,6 +172,8 @@ def test_policy_interpreter_batches_large_documents_without_duplicating_full_tex
     assert result["controls"] == []
     assert len(completions.calls) == 2
     assert all('"text"' not in call["messages"][1]["content"] for call in completions.calls)
+    assert all(call["response_format"]["type"] == "json_schema" for call in completions.calls)
+    assert all(call["response_format"]["json_schema"]["strict"] is True for call in completions.calls)
 
 
 def test_policy_interpreter_retries_empty_reasoning_completion_at_low_effort():
@@ -247,3 +249,57 @@ def test_policy_job_extracts_proposes_validates_and_persists():
     assert plane.get_policy_job(job["job_id"])["status"] == "completed"
     assert plane.get_policy(policy["document_id"], policy["version"])["clause_count"] == 1
     assert plane.get_policy_analysis(policy["document_id"], policy["version"])["controls"][0]["control_id"] == "sanctions.russia-location"
+
+
+def test_openai_model_version_policy_shape_errors_become_clarification_not_failure():
+    text = "OpenAI usage: model prior to GPT 5.5 shall not be used"
+
+    class MalformedInterpreter:
+        def interpret(self, policy, extracted_text, clauses):
+            assert extracted_text == text
+            return {
+                "obligations": [{
+                    "obligation_id": "approved-openai-model",
+                    "statement": "Do not use OpenAI models prior to GPT 5.5.",
+                    "detection_surfaces": ["source_literals", "configuration_iac"],
+                    "source_reference": text,
+                }],
+                "controls": [{
+                    "control_id": "openai.minimum-model-version",
+                    "obligation_ids": ["approved-openai-model"],
+                    "title": "Minimum OpenAI model version",
+                    "description": "Review selected OpenAI model versions.",
+                    "prohibited_condition": "OpenAI model is older than GPT 5.5.",
+                    "control_type": "manual_review",
+                    "severity": "high",
+                    "scope": "Evidence of model selection in source code and configuration",
+                    "exclusions": [],
+                    "clarification_questions": ["Provide the authoritative model catalog and ordering."],
+                    "source_reference": text,
+                    "confidence": "low",
+                    "match": {},
+                    "tests": [
+                        {"name": "old model", "file": "policy-review.txt", "content": "gpt-4", "should_match": True},
+                        {"name": "unrelated", "file": "policy-review.txt", "content": "hello", "should_match": False},
+                    ],
+                }],
+            }
+
+    plane = ControlPlane(connection_string="")
+    policy = plane.save_policy_document(
+        {"title": "OpenAI usage", "version": "1.0", "filename": "policy.txt"}, text
+    )
+    job = plane.record_policy_job(policy["document_id"], policy["version"])
+
+    [control] = process_policy_job(job, plane, interpreter=MalformedInterpreter())
+
+    assert control["confidence"] == 0.25
+    assert control["severity"] == "ERROR"
+    assert control["scope"] == {}
+    assert control["state"] == "needs_clarification"
+    assert any("scope was malformed" in item for item in control["clarification_questions"])
+    assert control["source_reference"]["excerpt"] == text
+    assert plane.get_policy_job(job["job_id"])["status"] == "completed"
+    stored_policy = plane.get_policy(policy["document_id"], policy["version"])
+    assert stored_policy["ingestion_status"] == "completed"
+    assert stored_policy["status"] == "needs_clarification"
