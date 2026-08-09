@@ -134,7 +134,7 @@ def admin_policy_job_route(req: func.HttpRequest) -> func.HttpResponse:
     return _unavailable() if _load_error else admin_policy_job(req)
 
 
-@app.route(route="admin/api/controls", methods=["GET"])
+@app.route(route="admin/api/controls", methods=["GET", "POST"])
 def admin_controls_route(req: func.HttpRequest) -> func.HttpResponse:
     return _unavailable() if _load_error else admin_controls(req)
 

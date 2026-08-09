@@ -20,6 +20,7 @@ import azure.functions as func
 
 from app import queue_policy_job, queue_review_job
 from prsa_control import get_control_plane
+from scanner import run_typed_control_scan
 
 logger = logging.getLogger(__name__)
 PORTAL_FILE = Path(__file__).with_name("admin_portal.html")
@@ -242,8 +243,82 @@ def policy_job(req: func.HttpRequest) -> func.HttpResponse:
     return _json_response({"job": value}, 200 if value else 404)
 
 
+def _author_deterministic_control(raw: dict[str, Any], *, actor: str) -> dict[str, Any]:
+    """Create an immutable deterministic control only after executing its tests."""
+    plane = get_control_plane()
+    for field in ("control_id", "version", "title", "prohibited_condition"):
+        if not str(raw.get(field) or "").strip():
+            raise ValueError(f"{field} is required")
+    if not isinstance(raw.get("detector"), dict):
+        raise ValueError("detector must be an object")
+    if raw.get("scope") is not None and not isinstance(raw.get("scope"), dict):
+        raise ValueError("scope must be an object")
+    document_id = str(raw.get("policy_document_id") or "")
+    policy_version = str(raw.get("policy_version") or "")
+    policy = plane.get_policy(document_id, policy_version)
+    if not policy:
+        raise ValueError("policy version was not found")
+    control_type = str(raw.get("control_type") or "")
+    supported = {"literal_value", "config_iac", "url_domain", "dependency"}
+    if control_type not in supported:
+        raise ValueError("authored controls must use a deterministic supported control type")
+    source = raw.get("source_reference") if isinstance(raw.get("source_reference"), dict) else {}
+    clause_id = str(source.get("clause_id") or "")
+    excerpt = str(source.get("excerpt") or "").strip()
+    clause = next(
+        (item for item in plane.list_policy_clauses(document_id, policy_version) if item.get("clause_id") == clause_id),
+        None,
+    )
+    if not clause or not excerpt or excerpt not in str(clause.get("excerpt") or ""):
+        raise ValueError("source_reference must quote an exact excerpt from the stored policy clause")
+    tests = [item for item in raw.get("tests", []) if isinstance(item, dict)]
+    if len(tests) > 50 or sum(len(str(item.get("content") or "")) for item in tests) > 2 * 1024 * 1024:
+        raise ValueError("control tests exceed the bounded validation budget")
+    expectations = {bool(item.get("should_match")) for item in tests}
+    if expectations != {False, True}:
+        raise ValueError("at least one positive and one negative test are required")
+    candidate = {
+        **raw,
+        "policy_document_id": policy["document_id"],
+        "policy_version": policy["version"],
+        "policy_title": policy["title"],
+        "source_reference": {**clause, "excerpt": excerpt},
+        "state": "draft",
+    }
+    results: list[dict[str, Any]] = []
+    for index, test in enumerate(tests):
+        filename = str(test.get("file") or f"control-test-{index + 1}.txt")
+        content = str(test.get("content") or "")
+        expected = bool(test.get("should_match"))
+        actual = bool(run_typed_control_scan({filename: content}, [candidate]))
+        results.append(
+            {
+                "name": str(test.get("name") or f"test-{index + 1}"),
+                "expected": expected,
+                "actual": actual,
+                "passed": actual == expected,
+            }
+        )
+    if not all(item["passed"] for item in results):
+        raise ValueError(f"control validation failed: {json.dumps(results)}")
+    candidate["validation"] = {"passed": True, "tests": results}
+    candidate["examples"] = {
+        "positive": [str(item.get("content") or "") for item in tests if item.get("should_match") is True],
+        "negative": [str(item.get("content") or "") for item in tests if item.get("should_match") is False],
+    }
+    return plane.save_control(candidate, actor=actor)
+
+
 def controls(req: func.HttpRequest) -> func.HttpResponse:
-    return _json_response({"controls": get_control_plane().list_controls()})
+    if req.method == "GET":
+        return _json_response({"controls": get_control_plane().list_controls()})
+    try:
+        value = _author_deterministic_control(_body(req), actor=_authorize(req, "Policy.Author"))
+        return _json_response({"control": value}, 201)
+    except PermissionError as exc:
+        return _json_response({"error": str(exc)}, 401)
+    except (TypeError, ValueError) as exc:
+        return _json_response({"error": str(exc)}, 400)
 
 
 def control_action(req: func.HttpRequest) -> func.HttpResponse:

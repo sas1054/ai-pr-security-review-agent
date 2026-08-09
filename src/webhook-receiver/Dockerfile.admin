@@ -11,6 +11,7 @@ COPY webhook-receiver/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements-web.txt
 
 COPY prsa_control ./prsa_control
+COPY orchestrator/scanner.py ./scanner.py
 COPY webhook-receiver/ ./
 
 EXPOSE 8000

@@ -73,6 +73,108 @@ def test_failed_policy_can_be_requeued_without_mutating_its_version(monkeypatch)
     assert json.loads(response.get_body())["job"]["job_id"] == "job-retry"
 
 
+def _policy_with_clause(plane):
+    text = "Software must not integrate crypto wallets or blockchain transaction services."
+    policy = plane.save_policy_document(
+        {"title": "Crypto", "version": "2026-01", "filename": "policy.txt"}, text
+    )
+    plane.save_policy_extraction(
+        policy["document_id"],
+        policy["version"],
+        text=text,
+        clauses=[{"clause_id": "clause-00001", "paragraph": 1, "excerpt": text}],
+    )
+    return policy, text
+
+
+def test_deterministic_control_is_authored_only_after_server_side_tests(monkeypatch):
+    plane = ControlPlane(connection_string="")
+    policy, text = _policy_with_clause(plane)
+    monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
+    response = admin.controls(
+        _request(
+            "POST",
+            {
+                "control_id": "crypto.prohibited-dependencies",
+                "version": "2.0",
+                "title": "Crypto dependency",
+                "prohibited_condition": "Crypto dependencies are prohibited.",
+                "control_type": "dependency",
+                "severity": "ERROR",
+                "policy_document_id": policy["document_id"],
+                "policy_version": policy["version"],
+                "source_reference": {"clause_id": "clause-00001", "excerpt": text},
+                "detector": {"packages": ["web3"]},
+                "tests": [
+                    {"file": "requirements.txt", "content": "web3==7.0\n", "should_match": True},
+                    {"file": "requirements.txt", "content": "requests==2.0\n", "should_match": False},
+                ],
+            },
+        )
+    )
+    payload = json.loads(response.get_body())
+    assert response.status_code == 201
+    assert payload["control"]["validation"]["passed"] is True
+    assert payload["control"]["state"] == "draft"
+
+
+def test_authored_control_rejects_unverified_citation(monkeypatch):
+    plane = ControlPlane(connection_string="")
+    policy, _ = _policy_with_clause(plane)
+    monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
+    response = admin.controls(
+        _request(
+            "POST",
+            {
+                "control_id": "crypto.bad",
+                "version": "2.0",
+                "title": "Bad citation",
+                "prohibited_condition": "Crypto dependencies are prohibited.",
+                "control_type": "dependency",
+                "policy_document_id": policy["document_id"],
+                "policy_version": policy["version"],
+                "source_reference": {"clause_id": "clause-00001", "excerpt": "invented text"},
+                "detector": {"packages": ["web3"]},
+                "tests": [
+                    {"file": "requirements.txt", "content": "web3==7.0\n", "should_match": True},
+                    {"file": "requirements.txt", "content": "requests==2.0\n", "should_match": False},
+                ],
+            },
+        )
+    )
+    assert response.status_code == 400
+    assert "exact excerpt" in json.loads(response.get_body())["error"]
+
+
+def test_authored_control_is_not_saved_when_detector_fails_its_examples(monkeypatch):
+    plane = ControlPlane(connection_string="")
+    policy, text = _policy_with_clause(plane)
+    monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
+    response = admin.controls(
+        _request(
+            "POST",
+            {
+                "control_id": "crypto.invalid-detector",
+                "version": "2.0",
+                "title": "Invalid detector",
+                "prohibited_condition": "Crypto dependencies are prohibited.",
+                "control_type": "dependency",
+                "policy_document_id": policy["document_id"],
+                "policy_version": policy["version"],
+                "source_reference": {"clause_id": "clause-00001", "excerpt": text},
+                "detector": {"packages": ["ethers"]},
+                "tests": [
+                    {"file": "requirements.txt", "content": "web3==7.0\n", "should_match": True},
+                    {"file": "requirements.txt", "content": "requests==2.0\n", "should_match": False},
+                ],
+            },
+        )
+    )
+    assert response.status_code == 400
+    assert "validation failed" in json.loads(response.get_body())["error"]
+    assert plane.get_control("crypto.invalid-detector", "2.0") is None
+
+
 def test_entra_role_is_required_for_policy_authoring(monkeypatch):
     monkeypatch.setenv("ADMIN_REQUIRE_ENTRA", "true")
     response = admin.policies(

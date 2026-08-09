@@ -30,8 +30,8 @@ Changed files are always scanned. When dependency or configuration controls requ
 All paths are below `/api/admin/api`:
 
 - `GET|POST /policies` lists policies or creates paste/upload/URL ingestion. Add `id` and `version` query parameters to retrieve extracted clauses, analysis, and generated controls.
-- `GET /policy-job?id=<job-id>` returns asynchronous ingestion state.
-- `GET /controls` lists every immutable control version.
+- `GET /policy-job?id=<job-id>` returns asynchronous ingestion state; `POST /policy-job` safely retries a failed version only when it has produced no controls.
+- `GET /controls` lists every immutable control version. `POST /controls` creates a deterministic remediation control only when its citation is an exact stored excerpt and server-executed positive and negative tests both pass.
 - `POST /control-action` performs `clarify`, `revise`, `approve`, `activate`, `suspend`, or `retire`.
 - `GET|POST /exceptions` lists or approves scoped exceptions.
 - `POST /exception-action` revokes an exception.
