@@ -23,6 +23,13 @@ from scanner import run_typed_control_scan
 
 logger = logging.getLogger(__name__)
 PORTAL_FILE = Path(__file__).with_name("admin_portal.html")
+PORTAL_ROLES = {
+    "Policy.Admin",
+    "Policy.Author",
+    "Policy.Approver",
+    "Policy.Activator",
+    "Exception.Approver",
+}
 
 
 def _actor(req: func.HttpRequest) -> str:
@@ -68,6 +75,14 @@ def _authorize(req: func.HttpRequest, required_role: str) -> str:
     return actor
 
 
+def authorize_portal(req: func.HttpRequest) -> str:
+    """Require a portal role when Entra is enabled, without affecting local key mode."""
+    actor = _actor(req)
+    if os.environ.get("ADMIN_REQUIRE_ENTRA", "false").lower() == "true" and not (_roles(req) & PORTAL_ROLES):
+        raise PermissionError("A PR Security Control portal role is required")
+    return actor
+
+
 def _json_response(value: dict[str, Any], status: int = 200) -> func.HttpResponse:
     return func.HttpResponse(
         json.dumps(value, ensure_ascii=False, default=str),
@@ -88,7 +103,7 @@ def _body(req: func.HttpRequest) -> dict[str, Any]:
 
 
 def portal(req: func.HttpRequest) -> func.HttpResponse:
-    _actor(req)
+    authorize_portal(req)
     return func.HttpResponse(
         PORTAL_FILE.read_text(encoding="utf-8"),
         status_code=200,
@@ -98,7 +113,7 @@ def portal(req: func.HttpRequest) -> func.HttpResponse:
 
 
 def dashboard(req: func.HttpRequest) -> func.HttpResponse:
-    actor = _actor(req)
+    actor = authorize_portal(req)
     value = get_control_plane().dashboard()
     value["identity"] = {"name": actor, "roles": sorted(_roles(req))}
     return _json_response(value)

@@ -17,6 +17,7 @@ from fastapi.responses import RedirectResponse, Response
 
 from admin import (
     audit_events,
+    authorize_portal,
     control_action,
     controls,
     dashboard,
@@ -99,7 +100,12 @@ async def admin_portal(request: Request) -> Response:
     ):
         return RedirectResponse(url="/.auth/login/aad?post_login_redirect_uri=/api/admin", status_code=302)
     _require_admin_access(request)
-    return _response(portal(await _function_request(request)))
+    function_request = await _function_request(request)
+    try:
+        authorize_portal(function_request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _response(portal(function_request))
 
 
 _ADMIN_ENDPOINTS: dict[str, Callable[[func.HttpRequest], func.HttpResponse]] = {
@@ -126,4 +132,9 @@ async def admin_api(endpoint: str, request: Request) -> Response:
     handler_fn = _ADMIN_ENDPOINTS.get(endpoint)
     if handler_fn is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _response(handler_fn(await _function_request(request)))
+    function_request = await _function_request(request)
+    try:
+        authorize_portal(function_request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _response(handler_fn(function_request))

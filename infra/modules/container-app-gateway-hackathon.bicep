@@ -181,6 +181,11 @@ resource gatewayAuth 'Microsoft.App/containerApps/authConfigs@2025-07-01' = if (
     identityProviders: {
       azureActiveDirectory: {
         enabled: true
+        login: {
+          loginParameters: [
+            'scope=openid profile offline_access'
+          ]
+        }
         registration: {
           clientId: adminEntraClientId
           clientSecretSettingName: 'MICROSOFT_PROVIDER_AUTHENTICATION_SECRET'
