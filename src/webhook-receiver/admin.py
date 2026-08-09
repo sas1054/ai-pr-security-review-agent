@@ -271,6 +271,23 @@ def _author_deterministic_control(raw: dict[str, Any], *, actor: str) -> dict[st
     )
     if not clause or not excerpt or excerpt not in str(clause.get("excerpt") or ""):
         raise ValueError("source_reference must quote an exact excerpt from the stored policy clause")
+    analysis = plane.get_policy_analysis(document_id, policy_version)
+    obligation_ids = {
+        str(item.get("obligation_id") or "")
+        for item in analysis.get("obligations", [])
+        if isinstance(item, dict) and item.get("obligation_id")
+    }
+    linked_obligations = [str(item) for item in raw.get("obligation_ids", []) if str(item) in obligation_ids]
+    if not linked_obligations and len(obligation_ids) == 1:
+        linked_obligations = list(obligation_ids)
+    if obligation_ids and not linked_obligations:
+        raise ValueError("obligation_ids must link the control to a stored policy obligation")
+    surface_by_type = {
+        "literal_value": ["source_literals"],
+        "config_iac": ["configuration_iac"],
+        "url_domain": ["service_endpoints"],
+        "dependency": ["dependencies"],
+    }
     tests = [item for item in raw.get("tests", []) if isinstance(item, dict)]
     if len(tests) > 50 or sum(len(str(item.get("content") or "")) for item in tests) > 2 * 1024 * 1024:
         raise ValueError("control tests exceed the bounded validation budget")
@@ -283,6 +300,8 @@ def _author_deterministic_control(raw: dict[str, Any], *, actor: str) -> dict[st
         "policy_version": policy["version"],
         "policy_title": policy["title"],
         "source_reference": {**clause, "excerpt": excerpt},
+        "obligation_ids": linked_obligations,
+        "detection_surfaces": surface_by_type[control_type],
         "state": "draft",
     }
     results: list[dict[str, Any]] = []
@@ -306,7 +325,9 @@ def _author_deterministic_control(raw: dict[str, Any], *, actor: str) -> dict[st
         "positive": [str(item.get("content") or "") for item in tests if item.get("should_match") is True],
         "negative": [str(item.get("content") or "") for item in tests if item.get("should_match") is False],
     }
-    return plane.save_control(candidate, actor=actor)
+    saved = plane.save_control(candidate, actor=actor)
+    plane.reconcile_policy_coverage(policy["document_id"], policy["version"], actor=actor)
+    return saved
 
 
 def controls(req: func.HttpRequest) -> func.HttpResponse:

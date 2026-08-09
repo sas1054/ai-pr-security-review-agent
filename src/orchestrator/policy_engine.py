@@ -210,6 +210,220 @@ class PolicyInterpreter(Protocol):
     def interpret(self, policy: dict[str, Any], text: str, clauses: list[dict[str, Any]]) -> dict[str, Any]: ...
 
 
+CANONICAL_SURFACES = {
+    "source_literals",
+    "code_structure",
+    "dependencies",
+    "service_endpoints",
+    "configuration_iac",
+    "semantic_behavior",
+    "repository_settings",
+    "manual_evidence",
+}
+
+CONTROL_TYPE_SURFACES = {
+    "literal_value": {"source_literals"},
+    "pattern": {"code_structure"},
+    "ast": {"code_structure"},
+    "dependency": {"dependencies"},
+    "url_domain": {"service_endpoints"},
+    "config_iac": {"configuration_iac"},
+    "semantic_review": {"semantic_behavior"},
+    "manual_review": {"manual_evidence"},
+}
+
+DETECTOR_TERM_KEYS = {"prohibited_values", "aliases", "field_names", "packages", "package_prefixes", "domains"}
+
+
+def _canonical_surface(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    aliases = {
+        "literal": "source_literals", "literals": "source_literals", "string_literals": "source_literals",
+        "source_code": "code_structure", "ast": "code_structure", "imports": "code_structure", "function_calls": "code_structure",
+        "dependency": "dependencies", "dependency_manifest": "dependencies", "dependency_manifests": "dependencies", "lock_files": "dependencies",
+        "url": "service_endpoints", "urls": "service_endpoints", "domain": "service_endpoints", "domains": "service_endpoints",
+        "api_calls": "service_endpoints", "api_endpoints": "service_endpoints", "network_endpoints": "service_endpoints",
+        "configuration": "configuration_iac", "config": "configuration_iac", "iac": "configuration_iac",
+        "deployment": "configuration_iac", "deployment_metadata": "configuration_iac", "infrastructure": "configuration_iac",
+        "semantic": "semantic_behavior", "behavior": "semantic_behavior", "data_flow": "semantic_behavior",
+        "repo_settings": "repository_settings", "repository_configuration": "repository_settings",
+        "manual": "manual_evidence", "human_review": "manual_evidence",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _source_for_obligation(raw: dict[str, Any], clauses: list[dict[str, Any]]) -> dict[str, Any] | None:
+    try:
+        return _verified_source(raw, clauses)
+    except PolicyEngineError:
+        return None
+
+
+def assess_policy_proposal(proposal: dict[str, Any], clauses: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a generic obligation-to-control coverage matrix and fail ambiguity closed.
+
+    This does not decide policy meaning. It checks that the model accounted for every
+    obligation and declared scan surface, and that concrete detector vocabulary is
+    either quoted by the policy or explicitly sent back for human clarification.
+    """
+    controls = [dict(item) for item in proposal.get("controls", []) if isinstance(item, dict)]
+    obligations: list[dict[str, Any]] = []
+    for index, item in enumerate(proposal.get("obligations", []), 1):
+        raw = dict(item) if isinstance(item, dict) else {"statement": str(item)}
+        obligation_id = re.sub(r"[^a-z0-9._-]+", "-", str(raw.get("obligation_id") or f"obligation-{index:03d}").lower()).strip("-")
+        surfaces = sorted(
+            {
+                _canonical_surface(value)
+                for value in raw.get("detection_surfaces", raw.get("surfaces", []))
+                if _canonical_surface(value) in CANONICAL_SURFACES
+            }
+        )
+        source = _source_for_obligation(raw, clauses)
+        obligations.append(
+            {
+                **raw,
+                "obligation_id": obligation_id,
+                "statement": str(raw.get("statement") or raw.get("obligation") or "").strip(),
+                "detection_surfaces": surfaces,
+                "source_reference": source or raw.get("source_reference") or {},
+            }
+        )
+    if not obligations:
+        # Older model responses used string obligations or omitted them. Derive an
+        # explicit obligation per cited control so coverage is visible, not implicit.
+        for index, control in enumerate(controls, 1):
+            obligations.append(
+                {
+                    "obligation_id": f"obligation-{index:03d}",
+                    "statement": str(control.get("prohibited_condition") or control.get("description") or "").strip(),
+                    "detection_surfaces": sorted(CONTROL_TYPE_SURFACES.get(str(control.get("control_type") or ""), set())),
+                    "source_reference": control.get("source_reference") or {},
+                    "derived_from_control": True,
+                }
+            )
+
+    obligation_ids = {item["obligation_id"] for item in obligations}
+    by_obligation: dict[str, list[dict[str, Any]]] = {item: [] for item in obligation_ids}
+    for index, control in enumerate(controls):
+        linked = [str(item) for item in control.get("obligation_ids", []) if str(item) in obligation_ids]
+        if not linked and len(obligations) == 1:
+            linked = [obligations[0]["obligation_id"]]
+        if not linked:
+            clause_id = str((control.get("source_reference") or {}).get("clause_id") or "")
+            linked = [
+                item["obligation_id"]
+                for item in obligations
+                if clause_id and clause_id == str((item.get("source_reference") or {}).get("clause_id") or "")
+            ]
+        control["obligation_ids"] = sorted(set(linked))
+        control["detection_surfaces"] = sorted(CONTROL_TYPE_SURFACES.get(str(control.get("control_type") or ""), set()))
+        questions = [str(item).strip() for item in control.get("clarification_questions", []) if str(item).strip()]
+        source_reference = control.get("source_reference") or {}
+        source_text = str(source_reference.get("excerpt") or "").casefold()
+        source_clause_id = str(source_reference.get("clause_id") or "")
+        source_text += " " + " ".join(
+            str(item.get("excerpt") or "").casefold()
+            for item in clauses
+            if source_clause_id and str(item.get("clause_id") or "") == source_clause_id
+        )
+        match = control.get("match") if isinstance(control.get("match"), dict) else {}
+        for key in DETECTOR_TERM_KEYS:
+            values = match.get(key, [])
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                term = str(value).strip()
+                if not term or term.casefold() in source_text:
+                    continue
+                questions.append(
+                    f"Detector term '{term}' is not stated in the cited policy text. Provide an approved source or remove it."
+                )
+        control["clarification_questions"] = list(dict.fromkeys(questions))[:25]
+        controls[index] = control
+        for obligation_id in control["obligation_ids"]:
+            by_obligation[obligation_id].append(control)
+
+    # Never silently drop an extracted obligation. A cited, non-executable
+    # obligation becomes a visible clarification placeholder that can never be
+    # approved or activated in place.
+    for obligation in obligations:
+        obligation_id = obligation["obligation_id"]
+        if by_obligation[obligation_id]:
+            if not obligation.get("source_reference"):
+                obligation["source_reference"] = by_obligation[obligation_id][0].get("source_reference") or {}
+            continue
+        source = _source_for_obligation(obligation, clauses)
+        if not source:
+            continue
+        placeholder = {
+            "control_id": f"{obligation_id}.coverage-review",
+            "title": f"Clarify implementation for {obligation_id}",
+            "description": "No reliable machine-executable PR control was generated for this obligation.",
+            "prohibited_condition": obligation.get("statement") or "Policy obligation requires implementation planning.",
+            "control_type": "manual_review",
+            "severity": "WARNING",
+            "scope": {},
+            "exclusions": [],
+            "clarification_questions": [
+                f"No executable control implements obligation '{obligation_id}'. Define its PR scope and approved detection strategy."
+            ],
+            "source_reference": source,
+            "confidence": 0.0,
+            "match": {},
+            "tests": [
+                {"name": "requires implementation", "file": "policy-review.txt", "content": obligation.get("statement") or obligation_id, "should_match": True},
+                {"name": "unrelated change", "file": "policy-review.txt", "content": "unrelated change", "should_match": False},
+            ],
+            "obligation_ids": [obligation_id],
+            "detection_surfaces": ["manual_evidence"],
+            "generated_coverage_placeholder": True,
+        }
+        controls.append(placeholder)
+        by_obligation[obligation_id].append(placeholder)
+
+    coverage: list[dict[str, Any]] = []
+    policy_questions: list[str] = []
+    for obligation in obligations:
+        obligation_id = obligation["obligation_id"]
+        linked = by_obligation[obligation_id]
+        covered = sorted({surface for control in linked for surface in control.get("detection_surfaces", [])})
+        expected = obligation.get("detection_surfaces") or []
+        uncovered = sorted(set(expected) - set(covered))
+        obligation_questions: list[str] = []
+        if not expected:
+            obligation_questions.append(f"Define the PR detection surfaces for obligation '{obligation_id}'.")
+        if not linked:
+            obligation_questions.append(f"No proposed control implements obligation '{obligation_id}'.")
+        if uncovered:
+            obligation_questions.append(
+                f"Obligation '{obligation_id}' has no proposed control for: {', '.join(uncovered)}."
+            )
+        policy_questions.extend(obligation_questions)
+        for question in obligation_questions:
+            for target in linked[:1]:
+                target["clarification_questions"] = list(dict.fromkeys([*target.get("clarification_questions", []), question]))[:25]
+        coverage.append(
+            {
+                "obligation_id": obligation_id,
+                "expected_surfaces": expected,
+                "covered_surfaces": covered,
+                "uncovered_surfaces": uncovered,
+                "control_ids": [str(item.get("control_id") or "") for item in linked],
+            }
+        )
+    proposal = {
+        **proposal,
+        "obligations": obligations,
+        "controls": controls,
+        "coverage": coverage,
+        "coverage_questions": list(dict.fromkeys(policy_questions)),
+    }
+    proposal["coverage_complete"] = not proposal["coverage_questions"] and all(
+        not item.get("clarification_questions") for item in controls
+    )
+    return proposal
+
+
 class AzureOpenAIPolicyInterpreter:
     def __init__(self, *, client: Any | None = None, deployment: str | None = None):
         self.deployment = deployment or os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
@@ -231,15 +445,23 @@ class AzureOpenAIPolicyInterpreter:
             for item in clauses
         ]
         prompt = (
-            "Extract enforceable security obligations from policy clauses. Return JSON with controls, obligations, exceptions, "
-            "effective_dates, defined_terms, and document_scope. Each control needs control_id, title, description, "
+            "Build a policy-agnostic PR control plan from the supplied clauses. Return JSON with controls, obligations, exceptions, "
+            "effective_dates, defined_terms, and document_scope. Each obligation must be an object with obligation_id, statement, "
+            "source_reference, enforceability, and detection_surfaces. detection_surfaces may only use source_literals, code_structure, "
+            "dependencies, service_endpoints, configuration_iac, semantic_behavior, repository_settings, or manual_evidence. "
+            "Account for every enforceable obligation; do not optimize for any example domain. Each control needs obligation_ids, "
+            "control_id, title, description, "
             "prohibited_condition, control_type, severity, scope, exclusions, clarification_questions, source_reference, confidence, "
-            "match, and tests. control_type must be literal_value, pattern, ast, dependency, url_domain, config_iac, semantic_review, "
+            "match, detector_provenance, and tests. control_type must be literal_value, pattern, ast, dependency, url_domain, config_iac, semantic_review, "
             "or manual_review. source_reference must copy one supplied clause excerpt exactly and retain its clause/page/section/paragraph. "
             "match may contain prohibited_values, aliases, field_names, patterns, packages, package_prefixes, domains, file_globs, "
             "exclude_globs, or semgrep_yaml. A Semgrep rule ID must be stable; the compiler will prefix it with the control ID. tests "
-            "contain file, content, and should_match. Ambiguous scope must produce clarification_questions. Never invent a citation or "
-            "silently broaden an obligation. Prefer deterministic control types; use manual_review when reliable compilation is impossible."
+            "contain file, content, and should_match, with at least one positive and one negative test per control. Never invent detector "
+            "values, package names, domains, aliases, or field names. If a necessary term is absent from the cited clause, do not guess: "
+            "add a clarification question requesting an approved catalog or source. detector_provenance lists only terms directly supported "
+            "by policy text, with value, source_kind='policy', and reference=clause_id. Ambiguous scope or an uncovered detection surface "
+            "must produce clarification_questions. Never invent a citation or silently broaden an obligation. Prefer deterministic control "
+            "types; use semantic_review or manual_review when reliable compilation is impossible, and never imply those establish compliance."
         )
         batches: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
@@ -289,8 +511,35 @@ class AzureOpenAIPolicyInterpreter:
             "controls": [], "obligations": [], "exceptions": [], "effective_dates": [], "defined_terms": {}, "document_scope": []
         }
         seen_controls: dict[str, str] = {}
+        seen_obligations: dict[str, str] = {}
         for result in results:
-            for key in ("obligations", "exceptions", "effective_dates"):
+            obligation_id_map: dict[str, str] = {}
+            if isinstance(result.get("obligations"), list):
+                for raw_obligation in result["obligations"]:
+                    if not isinstance(raw_obligation, dict):
+                        merged["obligations"].append(raw_obligation)
+                        continue
+                    obligation = dict(raw_obligation)
+                    original_id = str(obligation.get("obligation_id") or "")
+                    statement = str(obligation.get("statement") or obligation.get("obligation") or "")
+                    resolved_id = original_id
+                    if original_id and original_id in seen_obligations and seen_obligations[original_id] != statement:
+                        suffix = 2
+                        while f"{original_id}-{suffix}" in seen_obligations:
+                            suffix += 1
+                        resolved_id = f"{original_id}-{suffix}"
+                        obligation["obligation_id"] = resolved_id
+                    if resolved_id:
+                        obligation_id_map[original_id] = resolved_id
+                        seen_obligations[resolved_id] = statement
+                    if original_id and original_id in seen_obligations and seen_obligations[original_id] == statement and resolved_id == original_id:
+                        if any(
+                            isinstance(item, dict) and item.get("obligation_id") == original_id
+                            for item in merged["obligations"]
+                        ):
+                            continue
+                    merged["obligations"].append(obligation)
+            for key in ("exceptions", "effective_dates"):
                 if isinstance(result.get(key), list):
                     merged[key].extend(result[key])
             if isinstance(result.get("defined_terms"), dict):
@@ -300,10 +549,23 @@ class AzureOpenAIPolicyInterpreter:
             for control in result["controls"]:
                 if not isinstance(control, dict):
                     continue
+                control = dict(control)
+                if isinstance(control.get("obligation_ids"), list):
+                    control["obligation_ids"] = [
+                        obligation_id_map.get(str(item), str(item)) for item in control["obligation_ids"]
+                    ]
                 base = str(control.get("control_id") or control.get("title") or "control")
                 condition = str(control.get("prohibited_condition") or "")
                 if base in seen_controls and seen_controls[base] == condition:
-                    continue
+                    existing = next(item for item in merged["controls"] if str(item.get("control_id") or item.get("title") or "control") == base)
+                    existing_clause = str((existing.get("source_reference") or {}).get("clause_id") or "")
+                    control_clause = str((control.get("source_reference") or {}).get("clause_id") or "")
+                    if existing_clause and existing_clause == control_clause:
+                        existing["obligation_ids"] = sorted(
+                            set(str(item) for item in existing.get("obligation_ids", []))
+                            | set(str(item) for item in control.get("obligation_ids", []))
+                        )
+                        continue
                 if base in seen_controls:
                     suffix = 2
                     while f"{base}-{suffix}" in seen_controls:
@@ -312,7 +574,7 @@ class AzureOpenAIPolicyInterpreter:
                     base = str(control["control_id"])
                 seen_controls[base] = condition
                 merged["controls"].append(control)
-        return merged
+        return assess_policy_proposal(merged, clauses)
 
 
 class AzureOpenAISemanticControlScanner:
@@ -457,6 +719,10 @@ def compile_proposal(raw: dict[str, Any], policy: dict[str, Any], clauses: list[
         "description": str(raw.get("description") or ""),
         "prohibited_condition": str(raw.get("prohibited_condition") or ""),
         "control_type": kind,
+        "obligation_ids": [str(item) for item in raw.get("obligation_ids", []) if str(item)],
+        "detection_surfaces": [str(item) for item in raw.get("detection_surfaces", []) if str(item)],
+        "detector_provenance": [item for item in raw.get("detector_provenance", []) if isinstance(item, dict)],
+        "generated_coverage_placeholder": bool(raw.get("generated_coverage_placeholder")),
         "severity": _normalize_severity(raw.get("severity")),
         "scope": raw.get("scope") if isinstance(raw.get("scope"), dict) else {},
         "examples": {
@@ -540,7 +806,7 @@ def process_policy_job(job: dict[str, Any], controls: ControlPlane, interpreter:
         controls.save_policy_extraction(document_id, version, text=extraction.text, clauses=extraction.clauses)
         controls.update_policy_job(job_id, status="running", phase="Generating and validating proposed controls")
         model = interpreter or AzureOpenAIPolicyInterpreter()
-        proposal = model.interpret(policy, extraction.text, extraction.clauses)
+        proposal = assess_policy_proposal(model.interpret(policy, extraction.text, extraction.clauses), extraction.clauses)
         controls.save_policy_analysis(document_id, version, proposal)
         saved: list[dict[str, Any]] = []
         for raw_control in proposal["controls"]:
@@ -549,7 +815,11 @@ def process_policy_job(job: dict[str, Any], controls: ControlPlane, interpreter:
             saved.append(controls.save_control(compile_proposal(raw_control, policy, extraction.clauses)))
         if not saved:
             raise PolicyEngineError("No policy controls were proposed")
-        needs_clarification = any(item["state"] == "needs_clarification" for item in saved)
+        reconciled_policy = controls.reconcile_policy_coverage(document_id, version)
+        needs_clarification = (
+            not bool(reconciled_policy.get("coverage_complete"))
+            or any(item["state"] == "needs_clarification" for item in saved)
+        )
         controls.update_policy_state(
             document_id,
             version,

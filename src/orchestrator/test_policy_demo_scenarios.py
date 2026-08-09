@@ -17,17 +17,19 @@ from scanner import run_typed_control_scan
 
 SANCTIONS_POLICY = (
     "Due to current sanctions, software must not set any location, region, country, "
-    "deployment target, tenant, or address to Russia or Russian territories."
+    "deployment target, tenant, countrycode, deployment_region, or address to Russia, "
+    "ru-central, Russian Federation, RU, or Russian territories."
 )
 
 CRYPTO_POLICY = (
     "The software must not integrate cryptocurrency payment services, crypto wallets, "
     "mining libraries, exchanges, or blockchain transaction services unless explicitly "
-    "approved by Security Engineering."
+    "approved by Security Engineering. Governed examples are web3, bitcoinjs-lib, the "
+    "coinbase- package family, api.binance.com, and api.coinbase.com."
 )
 
-SANCTIONS_EXCERPT = "software must not set any location, region, country, deployment target, tenant, or address to Russia or Russian territories."
-CRYPTO_EXCERPT = "must not integrate cryptocurrency payment services, crypto wallets, mining libraries, exchanges, or blockchain transaction services"
+SANCTIONS_EXCERPT = SANCTIONS_POLICY
+CRYPTO_EXCERPT = CRYPTO_POLICY
 
 
 def _sanctions_controls(clause):
@@ -157,10 +159,22 @@ class DemoInterpreter:
         clause = clauses[0]
         if "Sanctions" in policy["title"]:
             controls = _sanctions_controls(clause)
-            obligations = ["Do not set any deployment location to Russia or a Russian territory"]
+            obligations = [{
+                "obligation_id": "restricted-location",
+                "statement": "Do not set any deployment location to a restricted value",
+                "detection_surfaces": ["configuration_iac", "source_literals"],
+                "source_reference": {**clause, "excerpt": SANCTIONS_EXCERPT},
+            }]
         else:
             controls = _crypto_controls(clause)
-            obligations = ["Do not integrate cryptocurrency services without approval"]
+            obligations = [{
+                "obligation_id": "restricted-integration",
+                "statement": "Do not integrate governed services without approval",
+                "detection_surfaces": ["dependencies", "service_endpoints", "manual_evidence"],
+                "source_reference": {**clause, "excerpt": CRYPTO_EXCERPT},
+            }]
+        for control in controls:
+            control["obligation_ids"] = [obligations[0]["obligation_id"]]
         return {
             "obligations": obligations,
             "exceptions": ["Explicit approval by Security Engineering"],

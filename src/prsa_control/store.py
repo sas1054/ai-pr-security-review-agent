@@ -581,6 +581,9 @@ class ControlPlane:
                 "analysis_blob": path,
                 "analysis_sha256": sha256(payload).hexdigest(),
                 "obligation_count": len(analysis.get("obligations") or []),
+                "coverage_complete": bool(analysis.get("coverage_complete")),
+                "coverage_gap_count": len(analysis.get("coverage_questions") or []),
+                "coverage_questions": [str(item) for item in (analysis.get("coverage_questions") or [])][:25],
                 "defined_term_count": len(analysis.get("defined_terms") or {}),
                 "exception_count": len(analysis.get("exceptions") or []),
                 "updated_at": _utcnow(),
@@ -600,6 +603,72 @@ class ControlPlane:
             return value if isinstance(value, dict) else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
             return {}
+
+    def reconcile_policy_coverage(self, document_id: str, version: str, *, actor: str = "policy-engine") -> dict[str, Any]:
+        """Recompute coverage after generated or human-authored control changes."""
+        policy = self.get_policy(document_id, version)
+        if not policy:
+            raise ValueError("policy version was not found")
+        analysis = self.get_policy_analysis(document_id, version)
+        obligations = [item for item in analysis.get("obligations", []) if isinstance(item, dict)]
+        if not obligations:
+            return policy
+        related = [
+            item
+            for item in self.list_controls()
+            if item.get("policy_document_id") == policy["document_id"]
+            and item.get("policy_version") == version
+            and item.get("state") != "retired"
+            and not item.get("generated_coverage_placeholder")
+        ]
+        questions: list[str] = []
+        coverage: list[dict[str, Any]] = []
+        for obligation in obligations:
+            obligation_id = str(obligation.get("obligation_id") or "")
+            expected = {str(item) for item in obligation.get("detection_surfaces", []) if str(item)}
+            linked = [item for item in related if obligation_id in item.get("obligation_ids", [])]
+            covered = {str(surface) for item in linked for surface in item.get("detection_surfaces", []) if str(surface)}
+            missing = sorted(expected - covered)
+            if not expected:
+                questions.append(f"Define the PR detection surfaces for obligation '{obligation_id}'.")
+            if not linked:
+                questions.append(f"No approvable control implements obligation '{obligation_id}'.")
+            if missing:
+                questions.append(f"Obligation '{obligation_id}' has no approvable control for: {', '.join(missing)}.")
+            for item in linked:
+                questions.extend(str(question) for question in item.get("clarification_questions", []) if str(question))
+            coverage.append(
+                {
+                    "obligation_id": obligation_id,
+                    "expected_surfaces": sorted(expected),
+                    "covered_surfaces": sorted(covered),
+                    "uncovered_surfaces": missing,
+                    "control_ids": [str(item.get("control_id") or "") for item in linked],
+                }
+            )
+        questions = list(dict.fromkeys(questions))[:25]
+        changed = (
+            bool(policy.get("coverage_complete")) != (not questions)
+            or policy.get("coverage_questions", []) != questions
+        )
+        policy.update(
+            {
+                "coverage_complete": not questions,
+                "coverage_gap_count": len(questions),
+                "coverage_questions": questions,
+                "coverage_reconciled_at": _utcnow(),
+                "updated_at": _utcnow(),
+                "revision": int(policy.get("revision", 1)) + 1,
+            }
+        )
+        self._put(POLICIES_TABLE, policy["document_id"], version, policy)
+        if changed:
+            self.audit(
+                "policy.coverage-reconciled",
+                actor,
+                {"document_id": policy["document_id"], "version": version, "coverage_complete": not questions, "coverage": coverage},
+            )
+        return policy
 
     def save_control(self, raw: dict[str, Any], *, actor: str = "policy-engine") -> dict[str, Any]:
         control_id = _control_key(str(raw.get("control_id") or raw.get("title") or "control"))
@@ -635,6 +704,10 @@ class ControlPlane:
             "description": str(raw.get("description") or ""),
             "prohibited_condition": str(raw.get("prohibited_condition") or ""),
             "control_type": control_type,
+            "obligation_ids": [str(item) for item in raw.get("obligation_ids", [])],
+            "detection_surfaces": [str(item) for item in raw.get("detection_surfaces", [])],
+            "detector_provenance": [item for item in raw.get("detector_provenance", []) if isinstance(item, dict)],
+            "generated_coverage_placeholder": bool(raw.get("generated_coverage_placeholder")),
             "severity": severity,
             "scope": raw.get("scope") or {},
             "examples": raw.get("examples") or {"positive": [], "negative": []},
@@ -697,6 +770,8 @@ class ControlPlane:
             raise ValueError(f"Invalid control transition: {current} to {target}")
         if target == "approved" and not bool(control.get("validation", {}).get("passed")):
             raise ValueError("control validation must pass before approval")
+        if target == "approved" and control.get("generated_coverage_placeholder"):
+            raise ValueError("coverage placeholders cannot be approved; author a real control or a new policy version")
         if target == "approved" and control.get("clarification_questions"):
             raise ValueError("clarification questions must be resolved before approval")
         if target == "active":
@@ -716,6 +791,10 @@ class ControlPlane:
         control["updated_by"] = actor
         control["revision"] = int(control.get("revision", 1)) + 1
         self._put(CONTROLS_TABLE, control["control_id"], version, control)
+        if target == "retired" and control.get("policy_document_id") and control.get("policy_version"):
+            self.reconcile_policy_coverage(
+                str(control["policy_document_id"]), str(control["policy_version"]), actor=actor
+            )
         self.audit("control.transitioned", actor, {"control_id": control["control_id"], "version": version, "from": current, "to": target})
         return control
 
@@ -727,6 +806,8 @@ class ControlPlane:
             raise ValueError("only a draft control can be approved")
         if not bool(control.get("validation", {}).get("passed")):
             raise ValueError("control validation must pass before approval")
+        if control.get("generated_coverage_placeholder"):
+            raise ValueError("coverage placeholders cannot be approved; author a real control or a new policy version")
         if control.get("clarification_questions"):
             raise ValueError("clarification questions must be resolved before approval")
         approval = {
@@ -738,6 +819,10 @@ class ControlPlane:
             "approved_at": _utcnow(),
             "validation": control["validation"],
             "source_reference": control["source_reference"],
+            "obligation_ids": control.get("obligation_ids", []),
+            "detection_surfaces": control.get("detection_surfaces", []),
+            "detector_provenance": control.get("detector_provenance", []),
+            "clarification_answers": control.get("clarification_answers", []),
             "approved_exceptions": [
                 item.get("exception_id")
                 for item in self.list_exceptions(include_expired=False)
@@ -776,11 +861,13 @@ class ControlPlane:
             and item.get("policy_version") == control.get("policy_version")
         ]
         if related and not any(item.get("clarification_questions") for item in related):
-            policy = self.get_policy(str(control["policy_document_id"]), str(control["policy_version"])) or {}
+            policy = self.reconcile_policy_coverage(
+                str(control["policy_document_id"]), str(control["policy_version"]), actor=actor
+            )
             self.update_policy_state(
                 str(control["policy_document_id"]),
                 str(control["policy_version"]),
-                status="ready",
+                status="ready" if policy.get("coverage_complete", True) else "partial_coverage",
                 ingestion_status=str(policy.get("ingestion_status") or "completed"),
             )
         self.audit("control.clarified", actor, {"control_id": control["control_id"], "version": version})
@@ -818,6 +905,23 @@ class ControlPlane:
             controls.append(hydrated)
             versions.append(f"{control['control_id']}@{control['version']}")
         return controls, versions
+
+    def policy_coverage_gaps(self, active_controls: list[dict[str, Any]]) -> list[str]:
+        """Declare incomplete policy compilation whenever any part is active."""
+        policy_keys = {
+            (str(item.get("policy_document_id") or ""), str(item.get("policy_version") or ""))
+            for item in active_controls
+            if item.get("policy_document_id") and item.get("policy_version")
+        }
+        gaps: list[str] = []
+        for document_id, version in sorted(policy_keys):
+            policy = self.get_policy(document_id, version) or {}
+            if policy.get("coverage_complete", True):
+                continue
+            questions = [str(item) for item in policy.get("coverage_questions", []) if str(item)]
+            detail = "; ".join(questions[:5]) or "the obligation-to-control coverage plan is incomplete"
+            gaps.append(f"Policy {document_id}@{version} has partial PR coverage: {detail}")
+        return gaps
 
     def save_exception(self, raw: dict[str, Any], *, actor: str = "admin") -> dict[str, Any]:
         control_id = _control_key(str(raw.get("control_id") or ""), "")

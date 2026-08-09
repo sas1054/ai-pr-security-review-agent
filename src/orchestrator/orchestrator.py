@@ -233,6 +233,7 @@ def process_review(
     all_active_controls, _ = controls.active_controls()
     active_controls = _applicable_controls(all_active_controls, review_job)
     coverage_gaps: list[str] = []
+    coverage_gaps.extend(controls.policy_coverage_gaps(active_controls))
     feature_settings = controls.get_settings()
     scanner_flags = {
         "literal_value": "scanner_literal_enabled",
@@ -388,6 +389,8 @@ def process_review(
                 "control_version": item.get("version"),
                 "policy_document_id": item.get("policy_document_id"),
                 "policy_version": item.get("policy_version"),
+                "obligation_ids": item.get("obligation_ids", []),
+                "detection_surfaces": item.get("detection_surfaces", []),
                 "detector_sha256": item.get("detector_sha256"),
             }
             for item in active_controls

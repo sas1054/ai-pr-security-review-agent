@@ -6,19 +6,30 @@ from prsa_control import ControlPlane
 from scanner import run_typed_control_scan
 
 
-POLICY = "Software must not set any deployment location to Russia or Russian territories."
+POLICY = (
+    "Software must not set deployment fields region, location, countryCode, or deployment_region "
+    "to Russia, ru-central, Russian Federation, or RU."
+)
 
 
 class Interpreter:
     def interpret(self, policy, text, clauses):
         return {
-            "obligations": ["Do not deploy to Russia"],
+            "obligations": [
+                {
+                    "obligation_id": "deployment-location",
+                    "statement": "Do not use the listed deployment locations.",
+                    "detection_surfaces": ["configuration_iac"],
+                    "source_reference": {**clauses[0], "excerpt": POLICY},
+                }
+            ],
             "exceptions": [],
             "effective_dates": [policy.get("effective_date")],
             "defined_terms": {"Russian territories": "Territories covered by the sanctions policy"},
             "controls": [
                 {
                     "control_id": "sanctions.russia-location",
+                    "obligation_ids": ["deployment-location"],
                     "title": "Prohibited deployment location",
                     "description": "Detects prohibited Russian deployment locations.",
                     "prohibited_condition": "Deployment location must not target Russia.",

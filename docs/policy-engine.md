@@ -7,9 +7,10 @@ The control portal accepts policy text in business language and turns it into pr
 1. Open **Policies** and paste text, upload a PDF/DOCX/TXT document, or provide a public HTTPS URL.
 2. The gateway stores an immutable source version and queues a `policy_ingestion` job.
 3. The worker extracts text and source locations, asks Azure OpenAI for structured obligations, validates every quoted excerpt against the source, compiles typed detector artifacts, and executes generated positive and negative tests.
-4. Review the plain-language controls in **Controls**. Ambiguous controls stay in `needs_clarification` until every question is answered.
-5. A user with `Policy.Approver` approves each validated control. A user with `Policy.Activator` activates it.
-6. Future Azure DevOps PR reviews execute active controls. Findings cite the exact policy version and source clause.
+4. The worker builds an obligation-to-control coverage matrix. Every obligation declares relevant PR surfaces such as code structure, dependencies, endpoints, configuration/IaC, repository settings, or semantic behavior. Missing surfaces remain visible as partial coverage.
+5. Review the plain-language controls in **Controls**. Ambiguous controls stay in `needs_clarification` until every question is answered.
+6. A user with `Policy.Approver` approves each validated control. A user with `Policy.Activator` activates it.
+7. Future Azure DevOps PR reviews execute active controls. Findings cite the exact policy version and source clause.
 
 Control states are `draft`, `needs_clarification`, `approved`, `active`, `suspended`, and `retired`. Approved or active content is never edited in place; **New version** creates another draft. Activating it retires the previous active control version while preserving its source and detector artifact.
 
@@ -24,6 +25,19 @@ Control states are `draft`, `needs_clarification`, `approved`, `active`, `suspen
 - Semantic and manual-review controls that can create non-blocking human-review findings but can never declare compliance or suppress deterministic results.
 
 Changed files are always scanned. When dependency or configuration controls require it, the worker also fetches a bounded set of relevant manifests, lock files, and deployment files from the PR source branch. Any unsupported or truncated coverage is recorded in the review evidence.
+
+## Domain-neutral coverage guarantees
+
+The two sample policies are acceptance fixtures, not built-in subjects. Production control generation has no sanctions, country, cryptocurrency, vendor, or package branching. It operates on normalized obligations and canonical scan surfaces.
+
+- Every extracted obligation must link to one or more proposed controls.
+- Every declared detection surface must map to a compatible scanner type.
+- An obligation with no reliable implementation becomes a visible, non-approvable coverage placeholder.
+- Concrete detector vocabulary such as package names, domains, aliases, field names, and prohibited values is checked against the cited policy text. Unstated vocabulary requires human clarification and an approved source.
+- A control can pass its generated examples while the policy still remains `partial_coverage`; these are deliberately separate claims.
+- Every PR using an active partially compiled policy records a coverage gap. A clean deterministic scan is never presented as full-policy compliance.
+
+Domain-neutral tests cover data-egress endpoints, production runtime configuration, repository-approval settings, unsupported surfaces, invented detector vocabulary, and multi-batch obligation identity in addition to the original acceptance examples.
 
 ## API contracts
 

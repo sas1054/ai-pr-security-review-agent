@@ -174,6 +174,42 @@ def test_policy_interpreter_batches_large_documents_without_duplicating_full_tex
     assert all('"text"' not in call["messages"][1]["content"] for call in completions.calls)
 
 
+def test_policy_interpreter_keeps_obligation_ids_unique_across_batches():
+    clauses = [
+        {"clause_id": "clause-a", "paragraph": 1, "excerpt": "A" * 120_000},
+        {"clause_id": "clause-b", "paragraph": 2, "excerpt": "B" * 120_000},
+    ]
+
+    class Completions:
+        def __init__(self):
+            self.index = 0
+
+        def create(self, **kwargs):
+            clause = clauses[self.index]
+            self.index += 1
+            payload = {
+                "obligations": [{
+                    "obligation_id": "requirement",
+                    "statement": f"Requirement {self.index}",
+                    "detection_surfaces": ["repository_settings"],
+                    "source_reference": clause,
+                }],
+                "controls": [],
+                "exceptions": [],
+                "defined_terms": {},
+            }
+            message = type("Message", (), {"content": __import__("json").dumps(payload)})()
+            return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+    completions = Completions()
+    fake = type("Client", (), {"chat": type("Chat", (), {"completions": completions})()})()
+
+    result = AzureOpenAIPolicyInterpreter(client=fake, deployment="model").interpret({"title": "Large"}, "ignored", clauses)
+
+    assert [item["obligation_id"] for item in result["obligations"]] == ["requirement", "requirement-2"]
+    assert {tuple(item["obligation_ids"]) for item in result["controls"]} == {("requirement",), ("requirement-2",)}
+
+
 class FakeInterpreter:
     def interpret(self, policy, text, clauses):
         assert text == POLICY_TEXT

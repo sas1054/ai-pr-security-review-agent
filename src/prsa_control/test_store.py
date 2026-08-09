@@ -106,6 +106,33 @@ def test_activation_feature_flag_is_fail_closed():
         plane.transition_control(control["control_id"], "1.0", "active", actor="activator")
 
 
+def test_active_partially_compiled_policy_declares_coverage_gap():
+    plane = ControlPlane(connection_string="")
+    policy = plane.save_policy_document(
+        {"title": "Repository Governance", "version": "1.0", "filename": "policy.txt"},
+        "Repositories must require two reviewers.",
+    )
+    plane.save_policy_analysis(
+        policy["document_id"],
+        policy["version"],
+        {
+            "obligations": [{"obligation_id": "reviewers"}],
+            "coverage_complete": False,
+            "coverage_questions": ["No repository-settings adapter is configured."],
+        },
+    )
+    control = plane.save_control(_control(policy))
+    plane.approve_control(control["control_id"], control["version"], actor="approver")
+    plane.transition_control(control["control_id"], control["version"], "active", actor="activator")
+    active, _ = plane.active_controls()
+
+    gaps = plane.policy_coverage_gaps(active)
+
+    assert len(gaps) == 1
+    assert "partial PR coverage" in gaps[0]
+    assert "repository-settings adapter" in gaps[0]
+
+
 def test_clarification_must_be_answered_before_approval():
     plane = ControlPlane(connection_string="")
     policy = plane.save_policy_document({"title": "Crypto", "filename": "policy.txt"}, "Anything related to cryptocurrency is prohibited.")

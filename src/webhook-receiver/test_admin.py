@@ -84,6 +84,20 @@ def _policy_with_clause(plane):
         text=text,
         clauses=[{"clause_id": "clause-00001", "paragraph": 1, "excerpt": text}],
     )
+    plane.save_policy_analysis(
+        policy["document_id"],
+        policy["version"],
+        {
+            "obligations": [{
+                "obligation_id": "crypto-integration",
+                "statement": text,
+                "detection_surfaces": ["dependencies"],
+                "source_reference": {"clause_id": "clause-00001", "paragraph": 1, "excerpt": text},
+            }],
+            "coverage_complete": False,
+            "coverage_questions": ["No dependency control has been authored."],
+        },
+    )
     return policy, text
 
 
@@ -116,6 +130,8 @@ def test_deterministic_control_is_authored_only_after_server_side_tests(monkeypa
     assert response.status_code == 201
     assert payload["control"]["validation"]["passed"] is True
     assert payload["control"]["state"] == "draft"
+    assert payload["control"]["obligation_ids"] == ["crypto-integration"]
+    assert plane.get_policy(policy["document_id"], policy["version"])["coverage_complete"] is True
 
 
 def test_authored_control_rejects_unverified_citation(monkeypatch):
