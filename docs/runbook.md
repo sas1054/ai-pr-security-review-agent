@@ -6,6 +6,8 @@ Use the admin portal's **Policies** page to queue extraction and control generat
 
 Before production rollout, deploy `infra/main.bicep` with `enableAdminEntraAuth=true` and the pre-created admin application's client and tenant IDs. Assign the `Policy.Author`, `Policy.Approver`, `Policy.Activator`, and `Exception.Approver` app roles documented in [policy-engine.md](policy-engine.md). Confirm `ADMIN_REQUIRE_ENTRA=true` in the Function App configuration.
 
+For a Container Apps portal, enable ID-token issuance on the Entra registration before testing Easy Auth: `az ad app update --id <application-client-id> --enable-id-token-issuance true`. Some corporate tenants also require an Entra administrator to grant consent for the standard `openid profile email` sign-in scopes. App-role assignment and OAuth consent are separate gates; both must be satisfied when tenant consent policy requires approval.
+
 When ingestion fails, check the job's `errors`, then verify document type/size, PDF text extraction, public-HTTPS URL restrictions, Azure OpenAI configuration, and generated citation/test validation. A failure or coverage gap must not be interpreted as compliance. Suspended and retired controls do not scan new PRs; historical review snapshots and detector hashes remain available.
 
 ## Re-deploying from scratch
