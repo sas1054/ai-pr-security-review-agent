@@ -480,25 +480,34 @@ class AzureOpenAIPolicyInterpreter:
 
         results: list[dict[str, Any]] = []
         for batch_number, batch in enumerate(batches, 1):
-            response = self.client.chat.completions.create(
-                model=self.deployment,
-                max_completion_tokens=min(int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8000")), 16000),
-                reasoning_effort=os.environ.get("LLM_REASONING_EFFORT", "medium"),
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "developer", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {"policy": policy, "batch": batch_number, "batch_count": len(batches), "clauses": batch},
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
-            )
-            content = response.choices[0].message.content
+            content = ""
+            finish_reason = "unknown"
+            configured_effort = os.environ.get("LLM_REASONING_EFFORT", "medium")
+            for effort in dict.fromkeys((configured_effort, "low")):
+                response = self.client.chat.completions.create(
+                    model=self.deployment,
+                    max_completion_tokens=min(int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8000")), 16000),
+                    reasoning_effort=effort,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "developer", "content": prompt},
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                {"policy": policy, "batch": batch_number, "batch_count": len(batches), "clauses": batch},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    ],
+                )
+                content = response.choices[0].message.content or ""
+                finish_reason = str(getattr(response.choices[0], "finish_reason", "unknown"))
+                if content:
+                    break
             if not content:
-                raise PolicyEngineError("Azure OpenAI returned an empty policy proposal")
+                raise PolicyEngineError(
+                    f"Azure OpenAI returned an empty policy proposal after bounded retry (finish_reason={finish_reason})"
+                )
             try:
                 result = json.loads(content)
             except json.JSONDecodeError as exc:

@@ -174,6 +174,28 @@ def test_policy_interpreter_batches_large_documents_without_duplicating_full_tex
     assert all('"text"' not in call["messages"][1]["content"] for call in completions.calls)
 
 
+def test_policy_interpreter_retries_empty_reasoning_completion_at_low_effort():
+    class Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            content = "" if len(self.calls) == 1 else '{"controls":[],"obligations":[],"exceptions":[],"defined_terms":{}}'
+            message = type("Message", (), {"content": content})()
+            choice = type("Choice", (), {"message": message, "finish_reason": "length" if not content else "stop"})()
+            return type("Response", (), {"choices": [choice]})()
+
+    completions = Completions()
+    fake = type("Client", (), {"chat": type("Chat", (), {"completions": completions})()})()
+    clauses = [{"clause_id": "c-1", "paragraph": 1, "excerpt": "A requirement."}]
+
+    result = AzureOpenAIPolicyInterpreter(client=fake, deployment="model").interpret({"title": "Policy"}, "ignored", clauses)
+
+    assert result["controls"] == []
+    assert [call["reasoning_effort"] for call in completions.calls] == ["medium", "low"]
+
+
 def test_policy_interpreter_keeps_obligation_ids_unique_across_batches():
     clauses = [
         {"clause_id": "clause-a", "paragraph": 1, "excerpt": "A" * 120_000},
