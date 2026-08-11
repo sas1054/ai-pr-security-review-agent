@@ -18,6 +18,18 @@ def _request(method="GET", body=None, params=None, headers=None):
     )
 
 
+def test_portal_groups_navigation_and_supports_page_finder():
+    response = admin.portal(_request())
+
+    assert response.status_code == 200
+    page = response.get_body().decode()
+    assert 'id="nav-search"' in page
+    assert 'data-nav-group' in page
+    assert "Press Ctrl/Cmd + K to search" in page
+    assert 'data-view="controls" data-search="controls rules safeguards generated controls"' in page
+    assert "function filterNavigation(value)" in page
+
+
 def test_pasted_policy_is_stored_and_queued(monkeypatch):
     plane = ControlPlane(connection_string="")
     monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
