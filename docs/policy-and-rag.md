@@ -1,4 +1,8 @@
-# Policy and regulation knowledge
+# Policy and reference knowledge
+
+> **Portal UX:** Reference-only sources now live in the **Policies** page beside enforceable policy sources. They are
+> labeled *Reference only* and can be approved or retired there; the underlying `regulation` storage/API names remain
+> for backward compatibility with existing citations and review evidence.
 
 > **Current capability:** The natural-language policy engine described in [policy-engine.md](policy-engine.md) now sits above this original rule-pack/regulation layer. Rule packs remain backward compatible, while new policies use immutable documents, citation-verified proposals, typed controls, per-control approval, exceptions, and review snapshots. Keyword regulation retrieval remains contextual evidence and does not replace executable controls.
 

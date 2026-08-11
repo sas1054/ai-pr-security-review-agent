@@ -60,11 +60,13 @@ The deployed portal uses single-tenant Microsoft Entra login and app-role assign
 webhook continues to use its separate private URL key. Use the clean portal URL printed by
 `configure-hackathon-secrets.ps1` or `show-hackathon-urls.ps1`. The portal persists
 its data in the existing Storage account and lets an admin view review history, queue a re-run, enable or disable a
-repository, adjust scan/token limits, create versioned simple rules, and store approved regulation text.
+repository, adjust scan/token limits, create versioned simple rules, and manage policy sources.
 
-Approved regulations are chunked and searchable today using keyword retrieval. The stored document,
-version, effective date, owner, tags, and chunk identifiers are deliberately shaped for a later Azure AI
-Search hybrid/vector RAG index. The key-only portal mode remains available only for local development.
+Each policy source is either **enforced** (compiled into proposed controls) or **reference-only**
+(approved contextual evidence and citations, never a finding). Reference-only sources are chunked and searchable
+today using keyword retrieval. Their document, version, effective date, owner, tags, and chunk identifiers are
+deliberately shaped for a later Azure AI Search hybrid/vector RAG index. The key-only portal mode remains available
+only for local development.
 
 See [the policy and RAG design](docs/policy-and-rag.md) for the live data model,
 approval rules, and the planned Azure AI Search migration path.

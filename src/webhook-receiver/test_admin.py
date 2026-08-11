@@ -246,3 +246,33 @@ def test_entra_role_claim_allows_policy_authoring(monkeypatch):
         )
     )
     assert response.status_code == 202
+
+
+def test_reference_source_creation_and_approval_require_policy_roles(monkeypatch):
+    plane = ControlPlane(connection_string="")
+    monkeypatch.setenv("ADMIN_REQUIRE_ENTRA", "true")
+    monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
+    author_principal = base64.b64encode(
+        json.dumps({"claims": [{"typ": "roles", "val": "Policy.Author"}]}).encode()
+    ).decode()
+    approver_principal = base64.b64encode(
+        json.dumps({"claims": [{"typ": "roles", "val": "Policy.Approver"}]}).encode()
+    ).decode()
+    created = admin.regulation(
+        _request(
+            "POST",
+            {"title": "Reference", "version": "1.0", "status": "draft", "content": "Use TLS."},
+            headers={"X-MS-CLIENT-PRINCIPAL-NAME": "author@example.com", "X-MS-CLIENT-PRINCIPAL": author_principal},
+        )
+    )
+    assert created.status_code == 200
+    document_id = json.loads(created.get_body())["regulation"]["document_id"]
+    approved = admin.regulation(
+        _request(
+            "POST",
+            {"action": "approve", "document_id": document_id, "version": "1.0"},
+            headers={"X-MS-CLIENT-PRINCIPAL-NAME": "approver@example.com", "X-MS-CLIENT-PRINCIPAL": approver_principal},
+        )
+    )
+    assert approved.status_code == 200
+    assert json.loads(approved.get_body())["regulation"]["status"] == "approved"

@@ -83,6 +83,74 @@
     document.querySelector('#rule-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.target));const body={pack_id:v.pack_id,title:v.title,version:v.version,status:v.status,rules:[{rule_id:v.rule_id,file_glob:v.file_glob,pattern:v.pattern,severity:v.severity,message:v.message,fix_hint:v.fix_hint}]};try{await post('rule-pack',body);notice(`Rule pack saved as ${v.status}.`);e.target.reset();e.target.version.value='1.0';e.target.file_glob.value='*'}catch(err){notice(err.message,true)}};
     document.querySelector('#regulation-form').onsubmit=async e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.target));v.tags=v.tags.split(',').map(x=>x.trim()).filter(Boolean);try{await post('regulation',v);notice(`Regulation saved as ${v.status}.`);e.target.reset();e.target.version.value='1.0'}catch(err){notice(err.message,true)}};
     document.querySelector('#search-form').onsubmit=async e=>{e.preventDefault();const q=document.querySelector('#search-query').value.trim();if(!q)return;try{const r=await api(`regulation-search?q=${encodeURIComponent(q)}`);document.querySelector('#regulation-results').innerHTML=r.results.length?r.results.map(x=>`<div class="citation"><b>${esc(x.title)}</b> <span class="badge ok">${esc(x.version)}</span><p>${esc(x.content)}</p><div class="fade">${esc(x.document_id)} · chunk ${esc(x.chunk_id)}${x.source_url?` · ${esc(x.source_url)}`:''}</div></div>`).join(''):'<div class="empty">No approved regulation matched that search.</div>';}catch(err){notice(err.message,true)}};
+    function renderReferenceSources(items){
+      const target=document.querySelector('#policies-list');
+      if(!target)return;
+      const card=item=>{
+        const state=String(item.status||'draft');
+        const actions=state==='draft'
+          ? `<button class="btn small reference-action" data-action="approve" data-id="${esc(item.document_id)}" data-version="${esc(item.version)}">Approve reference</button><button class="btn secondary small reference-action" data-action="retire" data-id="${esc(item.document_id)}" data-version="${esc(item.version)}">Retire</button>`
+          : state==='approved'
+            ? `<button class="btn secondary small reference-action" data-action="retire" data-id="${esc(item.document_id)}" data-version="${esc(item.version)}">Retire</button>`
+            : '';
+        return `<div class="citation"><div class="inline"><b>${esc(item.title)}</b><span class="badge">reference only</span>${badge(state)}</div><div class="fade">${esc(item.document_id)} @ ${esc(item.version)}${item.effective_date?` · effective ${esc(item.effective_date)}`:''}</div><p class="fade">Used as contextual evidence and citations only. It never creates a pull-request finding.</p><div class="pill-row">${(item.tags||[]).map(tag=>`<span class="badge">${esc(tag)}</span>`).join('')}</div><div class="inline" style="margin-top:10px">${actions}</div></div>`;
+      };
+      target.insertAdjacentHTML('beforeend',`<section class="collection-group"><div class="collection-group-head"><div><h3>Reference sources</h3><span class="fade">Approved references can be cited as context. They do not create PR findings.</span></div><span class="collection-count">${items.length}</span></div>${items.length?items.map(card).join(''):'<div class="empty">No reference-only source has been added.</div>'}</section>`);
+      document.querySelectorAll('.reference-action').forEach(button=>button.onclick=async()=>{try{await post('regulation',{action:button.dataset.action,document_id:button.dataset.id,version:button.dataset.version});notice(`Reference ${button.dataset.action}d.`)}catch(error){notice(error.message,true)}});
+    }
+
+    function setupUnifiedPolicySources(){
+      document.querySelector('.nav button[data-view="regulations"]')?.remove();
+      document.querySelector('#view-regulations').hidden=true;
+      const form=document.querySelector('#policy-form');
+      const inputType=document.querySelector('#policy-input-type');
+      const inputTypeField=inputType.closest('.field');
+      inputTypeField.insertAdjacentHTML('beforebegin',`<div class="field"><label>How should this source be used?</label><select name="source_mode" id="policy-source-mode"><option value="enforced">Enforce in PR reviews</option><option value="reference">Reference only — context and citations</option></select><div class="muted" id="policy-source-mode-help">Extract obligations and propose validated controls that can scan pull requests.</div></div>`);
+      form.querySelector('button[type="submit"]').insertAdjacentHTML('beforebegin',`<div class="reference-only" id="reference-source-fields" hidden><div class="form-grid"><div class="field"><label>Reference status</label><select name="reference_status"><option value="draft">Draft — not used in reviews</option><option value="approved">Approved — available for citations</option></select></div><div class="field"><label>Source URL</label><input name="reference_source_url" type="url" placeholder="https://internal-policy/…"></div></div><div class="field"><label>Tags (comma-separated)</label><input name="reference_tags" placeholder="transport, backend, baseline"></div></div>`);
+      const mode=document.querySelector('#policy-source-mode');
+      const help=document.querySelector('#policy-source-mode-help');
+      const submit=form.querySelector('button[type="submit"]');
+      const refreshMode=()=>{
+        const reference=mode.value==='reference';
+        document.querySelector('#reference-source-fields').hidden=!reference;
+        [...inputType.options].forEach(option=>option.hidden=reference&&option.value!=='paste');
+        if(reference){inputType.value='paste';inputType.dispatchEvent(new Event('change'));}
+        inputType.disabled=reference;
+        form.querySelector('[name="content"]').required=reference;
+        help.textContent=reference?'Store approved guidance for contextual citations. It will never create a pull-request finding.':'Extract obligations and propose validated controls that can scan pull requests.';
+        submit.textContent=reference?'Store reference source':'Extract and propose controls';
+      };
+      mode.onchange=refreshMode;
+      refreshMode();
+
+      const renderPolicyEngineBase=renderGroupedPolicyEngine;
+      renderGroupedPolicyEngine=function(){renderPolicyEngineBase();renderReferenceSources((state.data||{}).regulations||[]);};
+
+      form.onsubmit=async event=>{
+        event.preventDefault();
+        const values=Object.fromEntries(new FormData(event.target));
+        try{
+          if(values.source_mode==='reference'){
+            const body={title:values.title,version:values.version,owner:values.owner,effective_date:values.effective_date,status:values.reference_status,source_url:values.reference_source_url,content:values.content,tags:String(values.reference_tags||'').split(',').map(value=>value.trim()).filter(Boolean)};
+            await post('regulation',body);
+            notice(`Reference source saved as ${body.status}.`);
+            event.target.reset();
+            event.target.version.value='1.0';
+            mode.value='enforced';
+            refreshMode();
+            return;
+          }
+          const body={title:values.title,version:values.version,owner:values.owner,effective_date:values.effective_date,input_type:values.input_type};
+          if(values.input_type==='paste'){body.content=values.content}else if(values.input_type==='url'){body.source_url=values.source_url}else{const file=event.target.file.files[0];if(!file)throw new Error('Choose a PDF, Word, or text file.');body.filename=file.name;body.media_type=file.type||'application/octet-stream';body.content_base64=await fileBase64(file)}
+          const result=await post('policies',body);
+          notice(`Policy queued as job ${result.job.job_id}.`);
+          event.target.reset();
+          event.target.version.value='1.0';
+          document.querySelector('#policy-input-type').dispatchEvent(new Event('change'));
+        }catch(error){notice(error.message,true)}
+      };
+    }
+    setupUnifiedPolicySources();
     load();
   </script>
 </body>

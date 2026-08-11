@@ -145,7 +145,23 @@ def rule_pack(req: func.HttpRequest) -> func.HttpResponse:
 
 def regulation(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        return _json_response({"regulation": get_control_plane().save_regulation(_body(req), actor=_actor(req))})
+        raw = _body(req)
+        if raw.get("action") in {"approve", "retire"}:
+            actor = _authorize(req, "Policy.Approver")
+            return _json_response(
+                {
+                    "regulation": get_control_plane().transition_regulation(
+                        str(raw.get("document_id") or ""),
+                        str(raw.get("version") or ""),
+                        "approved" if raw["action"] == "approve" else "retired",
+                        actor=actor,
+                    )
+                }
+            )
+        actor = _authorize(req, "Policy.Author")
+        return _json_response({"regulation": get_control_plane().save_regulation(raw, actor=actor)})
+    except PermissionError as exc:
+        return _json_response({"error": str(exc)}, 401)
     except (TypeError, ValueError) as exc:
         return _json_response({"error": str(exc)}, 400)
 

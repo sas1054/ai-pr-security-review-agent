@@ -163,3 +163,26 @@ def test_expiring_exception_is_only_returned_while_active():
     assert plane.list_exceptions(include_expired=False)[0]["exception_id"] == exception["exception_id"]
     plane.revoke_exception(exception["exception_id"], actor="security@example.com")
     assert plane.list_exceptions(include_expired=False) == []
+
+
+def test_reference_source_can_be_approved_without_rewriting_its_content():
+    plane = ControlPlane(connection_string="")
+    reference = plane.save_regulation(
+        {
+            "title": "Secure Transport",
+            "version": "1.0",
+            "status": "draft",
+            "tags": ["transport"],
+            "content": "All service-to-service traffic must use TLS.",
+        },
+        actor="author@example.com",
+    )
+
+    approved = plane.transition_regulation(reference["document_id"], "1.0", "approved", actor="approver@example.com")
+
+    assert approved["status"] == "approved"
+    results = plane.search_regulations("service traffic TLS")
+    assert results[0]["document_id"] == reference["document_id"]
+    plane.transition_regulation(reference["document_id"], "1.0", "retired", actor="approver@example.com")
+    with pytest.raises(ValueError, match="cannot be re-approved"):
+        plane.transition_regulation(reference["document_id"], "1.0", "approved", actor="approver@example.com")

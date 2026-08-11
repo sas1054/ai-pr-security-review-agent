@@ -1,10 +1,15 @@
 # Natural-language policy-to-control engine
 
-The control portal accepts policy text in business language and turns it into proposed, testable controls. Administrators do not author regular expressions or Semgrep rules in this workflow. Legacy rule packs remain available only for compatibility.
+The control portal accepts policy sources in business language. An **enforced** source turns into proposed, testable
+controls; a **reference-only** source is approved contextual evidence that can be cited in a review but never creates a
+finding. Administrators do not author regular expressions or Semgrep rules in this workflow. Legacy rule packs remain
+available only for compatibility.
 
 ## Workflow
 
-1. Open **Policies** and paste text, upload a PDF/DOCX/TXT document, or provide a public HTTPS URL.
+1. Open **Policies** and choose **Enforce in PR reviews** or **Reference only**. Enforced sources can use pasted text,
+   a PDF/DOCX/TXT upload, or a public HTTPS URL; reference-only sources store pasted approved text with optional source
+   URL metadata for contextual retrieval.
 2. The gateway stores an immutable source version and queues a `policy_ingestion` job.
 3. The worker extracts text and source locations, asks Azure OpenAI for structured obligations, validates every quoted excerpt against the source, compiles typed detector artifacts, and executes generated positive and negative tests.
 4. The worker builds an obligation-to-control coverage matrix. Every obligation declares relevant PR surfaces such as code structure, dependencies, endpoints, configuration/IaC, repository settings, or semantic behavior. Missing surfaces remain visible as partial coverage.

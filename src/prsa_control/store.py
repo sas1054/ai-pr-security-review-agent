@@ -1111,6 +1111,42 @@ class ControlPlane:
     def list_regulations(self) -> list[dict[str, Any]]:
         return sorted(self._list(REGULATIONS_TABLE), key=lambda item: item.get("updated_at", ""), reverse=True)
 
+    def transition_regulation(self, document_id: str, version: str, status: str, *, actor: str) -> dict[str, Any]:
+        """Approve or retire a reference source without rewriting its immutable text."""
+        document_id = str(document_id or "").strip()
+        version = str(version or "").strip()
+        status = str(status or "").lower()
+        if not document_id or not version:
+            raise ValueError("document_id and version are required")
+        if status not in {"approved", "retired"}:
+            raise ValueError("reference status must be approved or retired")
+        existing = next(
+            (
+                item
+                for item in self._list(REGULATIONS_TABLE)
+                if item.get("document_id") == document_id and str(item.get("version")) == version
+            ),
+            None,
+        )
+        if not existing:
+            raise ValueError("reference source version was not found")
+        if existing.get("status") == "retired" and status == "approved":
+            raise ValueError("retired reference sources cannot be re-approved; create a new version")
+
+        value = {**existing, "status": status, "updated_at": _utcnow(), "updated_by": actor}
+        self._put(REGULATIONS_TABLE, document_id, version, value)
+        document_key = f"{document_id}@{version}"
+        for chunk in self._list(REGULATION_CHUNKS_TABLE):
+            if chunk.get("document_key") == document_key:
+                self._put(
+                    REGULATION_CHUNKS_TABLE,
+                    document_key,
+                    str(chunk.get("chunk_id")),
+                    {**chunk, "status": status},
+                )
+        self.audit("reference.status-changed", actor, {"document_id": document_id, "version": version, "status": status})
+        return value
+
     def search_regulations(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Keyword retrieval used now; the output shape is stable for vector RAG later."""
         terms = _words(query)
