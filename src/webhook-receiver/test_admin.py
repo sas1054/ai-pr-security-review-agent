@@ -30,6 +30,20 @@ def test_portal_groups_navigation_and_supports_page_finder():
     assert "function filterNavigation(value)" in page
 
 
+def test_portal_groups_and_filters_long_policy_and_control_lists():
+    response = admin.portal(_request())
+
+    page = response.get_body().decode()
+    assert 'id="policy-list-search"' in page
+    assert 'id="control-list-search"' in page
+    assert 'id="control-state-filter"' in page
+    assert 'id="control-policy-filter"' in page
+    assert 'id="control-group-nav"' in page
+    assert "const controlGroups=" in page
+    assert "function renderGroupedPolicyEngine()" in page
+    assert "Action required" in page and "Inactive or retired" in page
+
+
 def test_pasted_policy_is_stored_and_queued(monkeypatch):
     plane = ControlPlane(connection_string="")
     monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
