@@ -668,12 +668,18 @@ class AzureOpenAIPolicyInterpreter:
             "must produce clarification_questions. Never invent a citation or silently broaden an obligation. Prefer deterministic control "
             "types; use semantic_review or manual_review when reliable compilation is impossible, and never imply those establish compliance."
         )
+        # Output, not input context, is the limiting factor for policy plans:
+        # each clause can result in obligations, controls, citations, and tests.
+        # Keep batches deliberately small so a moderately sized policy cannot
+        # consume the whole completion budget in a single response.
+        max_batch_chars = 60_000
+        max_batch_clauses = 12
         batches: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
         current_size = 0
         for clause in clause_payload:
             size = len(json.dumps(clause, ensure_ascii=False))
-            if current and current_size + size > 220_000:
+            if current and (len(current) >= max_batch_clauses or current_size + size > max_batch_chars):
                 batches.append(current)
                 current, current_size = [], 0
             current.append(clause)
@@ -691,7 +697,7 @@ class AzureOpenAIPolicyInterpreter:
             for effort in dict.fromkeys((configured_effort, "low")):
                 response = self.client.chat.completions.create(
                     model=self.deployment,
-                    max_completion_tokens=min(int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8000")), 16000),
+                    max_completion_tokens=min(int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "16000")), 16000),
                     reasoning_effort=effort,
                     response_format=POLICY_PROPOSAL_RESPONSE_FORMAT,
                     messages=[

@@ -42,6 +42,7 @@ def test_portal_groups_and_filters_long_policy_and_control_lists():
     assert "const controlGroups=" in page
     assert "function renderGroupedPolicyEngine()" in page
     assert "Action required" in page and "Inactive or retired" in page
+    assert "Latest ingestion error" in page
 
 
 def test_pasted_policy_is_stored_and_queued(monkeypatch):

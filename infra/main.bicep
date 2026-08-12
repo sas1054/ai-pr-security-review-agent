@@ -75,7 +75,7 @@ param llmMaxInputTokens int = 100000
 
 @description('Largest model completion, including reasoning, allowed for one PR triage request')
 @minValue(1000)
-param llmMaxOutputTokens int = 8000
+param llmMaxOutputTokens int = 16000
 
 @description('Reasoning effort used by GPT-5.4 mini for security triage')
 @allowed(['low', 'medium', 'high'])

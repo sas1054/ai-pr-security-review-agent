@@ -170,10 +170,30 @@ def test_policy_interpreter_batches_large_documents_without_duplicating_full_tex
     clauses = [{"clause_id": f"c-{index}", "paragraph": index, "excerpt": "x" * 6000} for index in range(40)]
     result = AzureOpenAIPolicyInterpreter(client=fake, deployment="model").interpret({"title": "Large"}, "ignored" * 100_000, clauses)
     assert result["controls"] == []
-    assert len(completions.calls) == 2
+    assert len(completions.calls) == 5
     assert all('"text"' not in call["messages"][1]["content"] for call in completions.calls)
     assert all(call["response_format"]["type"] == "json_schema" for call in completions.calls)
     assert all(call["response_format"]["json_schema"]["strict"] is True for call in completions.calls)
+
+
+def test_policy_interpreter_limits_batches_by_clause_count_to_protect_output_budget():
+    class Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            message = type("Message", (), {"content": '{"controls":[],"obligations":[],"exceptions":[],"defined_terms":{}}'})()
+            return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+    completions = Completions()
+    fake = type("Client", (), {"chat": type("Chat", (), {"completions": completions})()})()
+    clauses = [{"clause_id": f"c-{index}", "paragraph": index, "excerpt": "Requirement."} for index in range(25)]
+
+    AzureOpenAIPolicyInterpreter(client=fake, deployment="model").interpret({"title": "Many clauses"}, "ignored", clauses)
+
+    assert len(completions.calls) == 3
+    assert [len(__import__("json").loads(call["messages"][1]["content"])["clauses"]) for call in completions.calls] == [12, 12, 1]
 
 
 def test_policy_interpreter_retries_empty_reasoning_completion_at_low_effort():
