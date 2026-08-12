@@ -8,6 +8,7 @@ from policy_engine import (
     AzureOpenAIPolicyInterpreter,
     PolicyEngineError,
     _validate_public_https,
+    assess_policy_proposal,
     compile_proposal,
     extract_document,
     fetch_public_policy,
@@ -107,6 +108,31 @@ def test_compiler_runs_positive_and_negative_tests():
     control = compile_proposal(_proposal(), policy, clauses)
     assert control["validation"]["passed"] is True
     assert [item["actual"] for item in control["validation"]["tests"]] == [True, False]
+
+
+def test_coverage_gap_explains_when_a_linked_control_misses_a_surface():
+    clause = {"clause_id": "clause-00001", "paragraph": 1, "excerpt": POLICY_TEXT}
+    proposal = {
+        "obligations": [{
+            "obligation_id": "logging",
+            "statement": "Sensitive values must not be logged.",
+            "detection_surfaces": ["source_literals"],
+            "source_reference": {**clause, "excerpt": POLICY_TEXT},
+        }],
+        "controls": [{
+            **_proposal(),
+            "control_id": "logging.review",
+            "control_type": "manual_review",
+            "obligation_ids": ["logging"],
+            "match": {},
+            "source_reference": {**clause, "excerpt": POLICY_TEXT},
+        }],
+    }
+
+    assessed = assess_policy_proposal(proposal, [clause])
+
+    assert any("not covered by the selected control type" in item for item in assessed["coverage_questions"])
+    assert not any("no proposed control for" in item for item in assessed["coverage_questions"])
 
 
 def test_compiler_normalizes_common_policy_risk_severity():

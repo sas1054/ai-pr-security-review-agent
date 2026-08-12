@@ -47,6 +47,8 @@ def test_portal_groups_and_filters_long_policy_and_control_lists():
     assert "Automatic (recommended)" in page
     assert "controlTypeDescriptions" in page
     assert "Control type guide" in page
+    assert "Why coverage warnings stay visible" in page
+    assert "function explainCoverageWarnings" in page
 
 
 def test_pasted_policy_is_stored_and_queued(monkeypatch):

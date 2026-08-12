@@ -611,9 +611,15 @@ def assess_policy_proposal(proposal: dict[str, Any], clauses: list[dict[str, Any
         if not linked:
             obligation_questions.append(f"No proposed control implements obligation '{obligation_id}'.")
         if uncovered:
-            obligation_questions.append(
-                f"Obligation '{obligation_id}' has no proposed control for: {', '.join(uncovered)}."
-            )
+            if linked:
+                obligation_questions.append(
+                    f"Obligation '{obligation_id}' is not covered by the selected control type for: {', '.join(uncovered)}. "
+                    "Choose a compatible detection approach or document why this surface is out of scope."
+                )
+            else:
+                obligation_questions.append(
+                    f"Obligation '{obligation_id}' has no proposed control for: {', '.join(uncovered)}."
+                )
         policy_questions.extend(obligation_questions)
         for question in obligation_questions:
             for target in linked[:1]:
