@@ -9,7 +9,9 @@ available only for compatibility.
 
 1. Open **Policies** and choose **Enforce in PR reviews** or **Reference only**. Enforced sources can use pasted text,
    a PDF/DOCX/TXT upload, or a public HTTPS URL; reference-only sources store pasted approved text with optional source
-   URL metadata for contextual retrieval.
+   URL metadata for contextual retrieval. For enforced sources, choose a **Preferred detection approach** when the
+   expected detector is known; **Automatic** is the recommended default. The choice guides control generation but does
+   not allow the worker to invent detector values or bypass clarification for missing policy evidence.
 2. The gateway stores an immutable source version and queues a `policy_ingestion` job.
 3. The worker extracts text and source locations, asks Azure OpenAI for structured obligations, validates every quoted excerpt against the source, compiles typed detector artifacts, and executes generated positive and negative tests.
 4. The worker builds an obligation-to-control coverage matrix. Every obligation declares relevant PR surfaces such as code structure, dependencies, endpoints, configuration/IaC, repository settings, or semantic behavior. Missing surfaces remain visible as partial coverage.
@@ -28,6 +30,11 @@ Control states are `draft`, `needs_clarification`, `approved`, `active`, `suspen
 - Exact and subdomain-aware URL/domain controls.
 - Direct and lock-file dependency controls for npm, Python, NuGet, Maven/Gradle, and Go.
 - Semantic and manual-review controls that can create non-blocking human-review findings but can never declare compliance or suppress deterministic results.
+
+The portal describes these choices in plain language: exact values or tokens → `literal_value`, text patterns → `pattern`,
+code structure → `ast`, configuration/IaC fields → `config_iac`, URLs/domains → `url_domain`, packages → `dependency`,
+model-assisted behavior → `semantic_review`, and human-only decisions → `manual_review`. Use `manual_review` sparingly;
+an unmatched active manual-review control is a PR-wide review reminder rather than diff-local evidence.
 
 Changed files are always scanned. When dependency or configuration controls require it, the worker also fetches a bounded set of relevant manifests, lock files, and deployment files from the PR source branch. Any unsupported or truncated coverage is recorded in the review evidence.
 

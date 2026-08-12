@@ -43,6 +43,10 @@ def test_portal_groups_and_filters_long_policy_and_control_lists():
     assert "function renderGroupedPolicyEngine()" in page
     assert "Action required" in page and "Inactive or retired" in page
     assert "Latest ingestion error" in page
+    assert 'id="policy-control-type-preference"' in page
+    assert "Automatic (recommended)" in page
+    assert "controlTypeDescriptions" in page
+    assert "Control type guide" in page
 
 
 def test_pasted_policy_is_stored_and_queued(monkeypatch):
@@ -61,13 +65,34 @@ def test_pasted_policy_is_stored_and_queued(monkeypatch):
                 "title": "Sanctions",
                 "version": "2026-01",
                 "content": "Software must not deploy to Russia.",
+                "control_type_preference": "literal_value",
             },
         )
     )
     assert response.status_code == 202
     payload = json.loads(response.get_body())
     assert payload["policy"]["source_sha256"]
+    assert payload["policy"]["control_type_preference"] == "literal_value"
     assert payload["job"]["job_id"] == "job-1"
+
+
+def test_pasted_policy_rejects_unknown_control_type_preference(monkeypatch):
+    plane = ControlPlane(connection_string="")
+    monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
+    response = admin.policies(
+        _request(
+            "POST",
+            {
+                "input_type": "paste",
+                "title": "Policy",
+                "version": "1.0",
+                "content": "A policy statement.",
+                "control_type_preference": "guessing",
+            },
+        )
+    )
+    assert response.status_code == 400
+    assert "control_type_preference" in json.loads(response.get_body())["error"]
 
 
 def test_upload_rejects_invalid_base64(monkeypatch):

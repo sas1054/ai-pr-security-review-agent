@@ -51,6 +51,17 @@ CONTROL_TYPES = {
     "semantic_review",
     "manual_review",
 }
+POLICY_DETECTION_PREFERENCES = {
+    "auto",
+    "literal_value",
+    "pattern",
+    "ast",
+    "config_iac",
+    "url_domain",
+    "dependency",
+    "semantic_review",
+    "manual_review",
+}
 CONTROL_TRANSITIONS = {
     "draft": {"needs_clarification", "approved", "retired"},
     "needs_clarification": {"draft", "retired"},
@@ -421,6 +432,9 @@ class ControlPlane:
         extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
         if extension not in {"txt", "pdf", "docx"}:
             raise ValueError("Only PDF, DOCX, and TXT policy documents are supported")
+        detection_preference = str(raw.get("control_type_preference") or "auto").strip().lower()
+        if detection_preference not in POLICY_DETECTION_PREFERENCES:
+            raise ValueError("control_type_preference must be auto or a supported control type")
         artifact = self.put_blob(f"{document_id}/{version}/source.{extension}", body)
         now = _utcnow()
         value = {
@@ -430,6 +444,7 @@ class ControlPlane:
             "status": "draft",
             "ingestion_status": "queued",
             "input_type": str(raw.get("input_type") or "upload"),
+            "control_type_preference": detection_preference,
             "filename": filename,
             "media_type": str(raw.get("media_type") or "text/plain"),
             "source_url": str(raw.get("source_url") or ""),

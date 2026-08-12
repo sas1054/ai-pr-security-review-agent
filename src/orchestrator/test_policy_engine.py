@@ -176,6 +176,27 @@ def test_policy_interpreter_batches_large_documents_without_duplicating_full_tex
     assert all(call["response_format"]["json_schema"]["strict"] is True for call in completions.calls)
 
 
+def test_policy_interpreter_guides_model_with_selected_detection_preference():
+    class Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            message = type("Message", (), {"content": '{"controls":[],"obligations":[],"exceptions":[],"defined_terms":{}}'})()
+            return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+    completions = Completions()
+    fake = type("Client", (), {"chat": type("Chat", (), {"completions": completions})()})()
+    AzureOpenAIPolicyInterpreter(client=fake, deployment="model").interpret(
+        {"title": "Model policy", "control_type_preference": "literal_value"},
+        "Only approved model IDs may be used.",
+        [{"clause_id": "c-1", "paragraph": 1, "excerpt": "Only approved model IDs may be used."}],
+    )
+    assert "administrator selected 'literal_value'" in completions.calls[0]["messages"][0]["content"]
+    assert "exact values or tokens" in completions.calls[0]["messages"][0]["content"]
+
+
 def test_policy_interpreter_limits_batches_by_clause_count_to_protect_output_budget():
     class Completions:
         def __init__(self):

@@ -96,6 +96,37 @@ def test_policy_versions_cannot_be_overwritten():
         plane.save_policy_document(raw, "Second")
 
 
+def test_policy_detection_preference_is_saved_and_validated():
+    plane = ControlPlane(connection_string="")
+    automatic = plane.save_policy_document(
+        {"title": "Automatic", "version": "1.0", "filename": "policy.txt"},
+        "Use the safest available detector.",
+    )
+    assert automatic["control_type_preference"] == "auto"
+
+    selected = plane.save_policy_document(
+        {
+            "title": "Model catalog",
+            "version": "1.0",
+            "filename": "policy.txt",
+            "control_type_preference": "literal_value",
+        },
+        "Only approved model IDs may be used.",
+    )
+    assert selected["control_type_preference"] == "literal_value"
+
+    with pytest.raises(ValueError, match="control_type_preference"):
+        plane.save_policy_document(
+            {
+                "title": "Unknown preference",
+                "version": "1.0",
+                "filename": "policy.txt",
+                "control_type_preference": "guessing",
+            },
+            "A policy statement.",
+        )
+
+
 def test_activation_feature_flag_is_fail_closed():
     plane = ControlPlane(connection_string="")
     policy = plane.save_policy_document({"title": "Sanctions", "filename": "policy.txt"}, "Software must not deploy to Russia.")

@@ -116,9 +116,14 @@
       const form=document.querySelector('#policy-form');
       const inputType=document.querySelector('#policy-input-type');
       const inputTypeField=inputType.closest('.field');
+      inputTypeField.insertAdjacentHTML('beforebegin',`<div class="field"><label for="policy-control-type-preference">Preferred detection approach</label><select name="control_type_preference" id="policy-control-type-preference"><option value="auto">Automatic (recommended)</option><option value="literal_value">Exact values or tokens</option><option value="pattern">Text pattern</option><option value="ast">Code structure</option><option value="config_iac">Configuration or IaC fields</option><option value="url_domain">URL or domain</option><option value="dependency">Package or dependency</option><option value="semantic_review">Behavior requiring semantic review</option><option value="manual_review">Human review only</option></select><div class="muted" id="policy-control-type-help">The system chooses the most specific detector supported by the policy. It will still ask only when required evidence or scope is missing.</div></div>`);
       inputTypeField.insertAdjacentHTML('beforebegin',`<div class="field"><label>How should this source be used?</label><select name="source_mode" id="policy-source-mode"><option value="enforced">Enforce in PR reviews</option><option value="reference">Reference only — context and citations</option></select><div class="muted" id="policy-source-mode-help">Extract obligations and propose validated controls that can scan pull requests.</div></div>`);
       form.querySelector('button[type="submit"]').insertAdjacentHTML('beforebegin',`<div class="reference-only" id="reference-source-fields" hidden><div class="form-grid"><div class="field"><label>Reference status</label><select name="reference_status"><option value="draft">Draft — not used in reviews</option><option value="approved">Approved — available for citations</option></select></div><div class="field"><label>Source URL</label><input name="reference_source_url" type="url" placeholder="https://internal-policy/…"></div></div><div class="field"><label>Tags (comma-separated)</label><input name="reference_tags" placeholder="transport, backend, baseline"></div></div>`);
       const mode=document.querySelector('#policy-source-mode');
+      const controlType=document.querySelector('#policy-control-type-preference');
+      const controlTypeHelp=document.querySelector('#policy-control-type-help');
+      const controlTypeDescriptions={auto:'The system chooses the most specific detector supported by the policy. It will still ask only when required evidence or scope is missing.',literal_value:'Use for exact values or tokens, such as model IDs, prohibited names, or environment values.',pattern:'Use for bounded text patterns, such as naming conventions or forbidden syntax.',ast:'Use for code structure or call patterns that can be validated through Semgrep.',config_iac:'Use for structured configuration and infrastructure fields or values.',url_domain:'Use for URLs, hostnames, and service domains.',dependency:'Use for package and dependency manifests.',semantic_review:'Use when behavior needs model-assisted evidence from changed code.',manual_review:'Use only when a human decision is genuinely required; unmatched controls may create a review reminder for the whole PR.'};
+      controlType.onchange=()=>{controlTypeHelp.textContent=controlTypeDescriptions[controlType.value]||controlTypeDescriptions.auto;};
       const help=document.querySelector('#policy-source-mode-help');
       const submit=form.querySelector('button[type="submit"]');
       const refreshMode=()=>{
@@ -151,7 +156,7 @@
             refreshMode();
             return;
           }
-          const body={title:values.title,version:values.version,owner:values.owner,effective_date:values.effective_date,input_type:values.input_type};
+          const body={title:values.title,version:values.version,owner:values.owner,effective_date:values.effective_date,input_type:values.input_type,control_type_preference:values.control_type_preference||'auto'};
           if(values.input_type==='paste'){body.content=values.content}else if(values.input_type==='url'){body.source_url=values.source_url}else{const file=event.target.file.files[0];if(!file)throw new Error('Choose a PDF, Word, or text file.');body.filename=file.name;body.media_type=file.type||'application/octet-stream';body.content_base64=await fileBase64(file)}
           const result=await post('policies',body);
           notice(`Policy queued as job ${result.job.job_id}.`);
@@ -161,7 +166,9 @@
         }catch(error){notice(error.message,true)}
       };
     }
+    function installControlTypeGuide(){ const target=document.querySelector('#controls-list'); if(!target)return; target.insertAdjacentHTML('beforebegin',`<details class="citation" style="margin-bottom:14px"><summary><b>Control type guide</b> <span class="fade">Choose the most specific option that can prove a violation.</span></summary><p><b>Exact values or tokens</b> — model IDs, prohibited names, or environment values.</p><p><b>Text pattern</b> — bounded naming conventions or forbidden syntax.</p><p><b>Code structure</b> — calls or syntax validated through Semgrep.</p><p><b>Configuration or IaC fields</b> — structured deployment settings.</p><p><b>URL or domain</b> — hosts and service endpoints. <b>Package or dependency</b> — dependency manifests.</p><p><b>Behavior requiring semantic review</b> — model-assisted evidence. <b>Human review only</b> — use sparingly because unmatched controls can create a PR-wide review reminder.</p></details>`); }
     setupUnifiedPolicySources();
+    installControlTypeGuide();
     load();
   </script>
 </body>

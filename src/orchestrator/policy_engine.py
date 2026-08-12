@@ -42,6 +42,17 @@ CONFIDENCE_LABELS = {
     "high": 0.85,
     "very high": 0.95,
 }
+CONTROL_TYPE_PREFERENCE_LABELS = {
+    "auto": "automatic selection based on the obligation and available evidence",
+    "literal_value": "exact values or tokens such as model IDs, prohibited names, or environment values",
+    "pattern": "bounded text patterns such as naming conventions or forbidden syntax",
+    "ast": "code structure and call patterns validated through Semgrep",
+    "config_iac": "structured configuration or infrastructure fields and values",
+    "url_domain": "URLs, hostnames, and service domains",
+    "dependency": "package and dependency manifests",
+    "semantic_review": "behavior that requires model-assisted evidence from the changed code",
+    "manual_review": "a human decision when no reliable automated detector is possible",
+}
 
 SOURCE_REFERENCE_SCHEMA = {
     "type": "object",
@@ -649,6 +660,16 @@ class AzureOpenAIPolicyInterpreter:
             {key: item.get(key) for key in ("clause_id", "page", "section", "paragraph", "excerpt") if item.get(key) not in (None, "")}
             for item in clauses
         ]
+        preference = str(policy.get("control_type_preference") or "auto").strip().lower()
+        if preference not in CONTROL_TYPE_PREFERENCE_LABELS:
+            preference = "auto"
+        preference_instruction = (
+            f"The administrator selected '{preference}' ({CONTROL_TYPE_PREFERENCE_LABELS[preference]}). "
+            "Prefer this control type whenever it is compatible with the obligation. "
+            "Do not invent detector vocabulary or force an incompatible type; ask a clarification only for missing policy evidence, scope, or an unsupported detection surface. "
+            if preference != "auto"
+            else "The administrator selected automatic control-type selection; prefer the most specific deterministic type that the policy evidence supports. "
+        )
         prompt = (
             "Build a policy-agnostic PR control plan from the supplied clauses. Return JSON with controls, obligations, exceptions, "
             "effective_dates, defined_terms, and document_scope. Each obligation must be an object with obligation_id, statement, "
@@ -666,7 +687,8 @@ class AzureOpenAIPolicyInterpreter:
             "add a clarification question requesting an approved catalog or source. detector_provenance lists only terms directly supported "
             "by policy text, with value, source_kind='policy', and reference=clause_id. Ambiguous scope or an uncovered detection surface "
             "must produce clarification_questions. Never invent a citation or silently broaden an obligation. Prefer deterministic control "
-            "types; use semantic_review or manual_review when reliable compilation is impossible, and never imply those establish compliance."
+            "types; use semantic_review or manual_review when reliable compilation is impossible, and never imply those establish compliance. "
+            + preference_instruction
         )
         # Output, not input context, is the limiting factor for policy plans:
         # each clause can result in obligations, controls, citations, and tests.
