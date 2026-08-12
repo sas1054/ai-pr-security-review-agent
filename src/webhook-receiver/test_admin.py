@@ -99,6 +99,20 @@ def test_failed_policy_can_be_requeued_without_mutating_its_version(monkeypatch)
     assert json.loads(response.get_body())["job"]["job_id"] == "job-retry"
 
 
+def test_only_retired_policy_without_controls_can_be_removed(monkeypatch):
+    plane = ControlPlane(connection_string="")
+    policy = plane.save_policy_document(
+        {"title": "Retired policy", "version": "1.0", "filename": "policy.txt"},
+        "A retired policy source.",
+    )
+    monkeypatch.setattr(admin, "get_control_plane", lambda: plane)
+
+    assert admin.policy_action(_request("POST", {"action": "remove", "document_id": policy["document_id"], "version": "1.0"})).status_code == 400
+    assert admin.policy_action(_request("POST", {"action": "retire", "document_id": policy["document_id"], "version": "1.0"})).status_code == 200
+    assert admin.policy_action(_request("POST", {"action": "remove", "document_id": policy["document_id"], "version": "1.0"})).status_code == 200
+    assert plane.get_policy(policy["document_id"], "1.0") is None
+
+
 def _policy_with_clause(plane):
     text = "Software must not integrate crypto wallets or blockchain transaction services."
     policy = plane.save_policy_document(

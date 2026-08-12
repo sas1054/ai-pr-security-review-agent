@@ -903,6 +903,11 @@ def _verified_source(raw: dict[str, Any], clauses: list[dict[str, Any]]) -> dict
 def compile_proposal(raw: dict[str, Any], policy: dict[str, Any], clauses: list[dict[str, Any]]) -> dict[str, Any]:
     kind = str(raw.get("control_type") or "manual_review")
     control_id = re.sub(r"[^a-z0-9._-]+", "-", str(raw.get("control_id") or raw.get("title") or "control").strip().lower()).strip("._-")[:120] or "control"
+    # Model-generated identifiers such as "ctl-001" are only meaningful
+    # within a policy.  Namespace them so two policies cannot collide.
+    policy_prefix = f"{policy['document_id']}."
+    if not control_id.startswith(policy_prefix):
+        control_id = f"{policy_prefix}{control_id}"[:120]
     match = raw.get("match") if isinstance(raw.get("match"), dict) else {}
     detector: dict[str, Any] = {
         key: value
@@ -1009,6 +1014,12 @@ def process_policy_job(job: dict[str, Any], controls: ControlPlane, interpreter:
     policy = controls.get_policy(document_id, version)
     if not policy:
         raise PolicyEngineError("Policy version was not found")
+    stored_job = controls.get_policy_job(job_id)
+    existing_controls = controls.policy_controls(document_id, version)
+    if stored_job and stored_job.get("status") == "completed" and existing_controls:
+        if stored_job.get("errors"):
+            controls.update_policy_job(job_id, errors=[])
+        return existing_controls
     controls.update_policy_job(job_id, status="running", phase="Extracting policy source")
     try:
         if policy.get("source_pending"):
@@ -1028,7 +1039,26 @@ def process_policy_job(job: dict[str, Any], controls: ControlPlane, interpreter:
         for raw_control in proposal["controls"]:
             if not isinstance(raw_control, dict):
                 continue
-            saved.append(controls.save_control(compile_proposal(raw_control, policy, extraction.clauses)))
+            candidate = compile_proposal(raw_control, policy, extraction.clauses)
+            # Retried deliveries may resume after controls were written but
+            # before the message acknowledgement.  Reuse that exact proposal.
+            previous = controls.get_control(candidate["control_id"], candidate["version"])
+            if previous and previous.get("policy_document_id") == policy["document_id"] and previous.get("policy_version") == version:
+                saved.append(previous)
+                continue
+            # Compatibility for controls generated before identifiers were
+            # namespaced.  Titles are validated against this policy/version.
+            legacy = next(
+                (
+                    item
+                    for item in controls.policy_controls(document_id, version)
+                    if item.get("title") == candidate["title"]
+                    and str((item.get("source_reference") or {}).get("excerpt") or "")
+                    == str((candidate.get("source_reference") or {}).get("excerpt") or "")
+                ),
+                None,
+            )
+            saved.append(legacy or controls.save_control(candidate))
         if not saved:
             raise PolicyEngineError("No policy controls were proposed")
         reconciled_policy = controls.reconcile_policy_coverage(document_id, version)
@@ -1042,7 +1072,7 @@ def process_policy_job(job: dict[str, Any], controls: ControlPlane, interpreter:
             status="needs_clarification" if needs_clarification else "ready",
             ingestion_status="completed",
         )
-        controls.update_policy_job(job_id, status="completed", phase="Proposed controls are ready", control_count=len(saved))
+        controls.update_policy_job(job_id, status="completed", phase="Proposed controls are ready", control_count=len(saved), errors=[])
         controls.audit("policy.ingestion-completed", "policy-engine", {"job_id": job_id, "control_count": len(saved)})
         return saved
     except Exception as exc:

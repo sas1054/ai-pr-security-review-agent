@@ -124,6 +124,15 @@ def test_unknown_and_invalid_control_actions_are_rejected(plane):
     assert _act("approve", {"control_id": "missing", "version": "9.9"}).status_code == 400
 
 
+def test_only_retired_controls_can_be_removed(plane):
+    control = _draft(plane)
+
+    assert _act("remove", control).status_code == 400
+    assert _act("retire", control).status_code == 200
+    assert _act("remove", control).status_code == 200
+    assert plane.get_control(control["control_id"], control["version"]) is None
+
+
 @pytest.mark.parametrize(
     "action, required_role, extra",
     [

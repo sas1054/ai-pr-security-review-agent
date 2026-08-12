@@ -526,6 +526,10 @@ class ControlPlane:
         current = next((item for item in self._list(POLICY_JOBS_TABLE) if item.get("job_id") == job_id), None)
         if not current:
             raise ValueError("policy ingestion job was not found")
+        # Service Bus delivery is at-least-once.  A delayed failed worker must
+        # never overwrite the terminal result of a later successful attempt.
+        if current.get("status") == "completed" and updates.get("status") == "failed":
+            return current
         value = {**current, **updates, "updated_at": _utcnow()}
         self._put(POLICY_JOBS_TABLE, str(value["document_id"]), job_id, value)
         return value
@@ -569,6 +573,86 @@ class ControlPlane:
     def list_policy_clauses(self, document_id: str, version: str) -> list[dict[str, Any]]:
         key = f"{_slug(document_id)}@{version}"
         return [item for item in self._list(POLICY_CLAUSES_TABLE) if f"{item.get('document_id')}@{item.get('policy_version')}" == key]
+
+    def policy_controls(self, document_id: str, version: str) -> list[dict[str, Any]]:
+        """Return every control linked to one immutable policy version."""
+        document_id = _slug(document_id)
+        return [
+            item
+            for item in self.list_controls()
+            if item.get("policy_document_id") == document_id and str(item.get("policy_version")) == str(version)
+        ]
+
+    def retire_policy(self, document_id: str, version: str, *, actor: str) -> dict[str, Any]:
+        """Retire a policy only after its linked controls are also retired."""
+        policy = self.get_policy(document_id, version)
+        if not policy:
+            raise ValueError("policy version was not found")
+        if policy.get("status") == "retired":
+            return policy
+        still_live = [item for item in self.policy_controls(document_id, version) if item.get("state") != "retired"]
+        if still_live:
+            raise ValueError("Retire every linked control before retiring this policy")
+        policy.update(
+            {
+                "status": "retired",
+                "ingestion_status": "retired",
+                "updated_at": _utcnow(),
+                "revision": int(policy.get("revision", 1)) + 1,
+            }
+        )
+        self._put(POLICIES_TABLE, policy["document_id"], str(version), policy)
+        self.audit("policy.retired", actor, {"document_id": policy["document_id"], "version": str(version)})
+        return policy
+
+    def _delete_blob(self, path: str, *, container_name: str = POLICY_CONTAINER) -> None:
+        normalized = path.replace("\\", "/").strip("/")
+        if not normalized:
+            return
+        if self._blob_service:
+            try:
+                self._blob_service.get_blob_client(container_name, normalized).delete_blob(delete_snapshots="include")
+            except AzureError:
+                pass
+        self._memory_blobs.pop(f"{container_name}/{normalized}", None)
+
+    def remove_control(self, control_id: str, version: str, *, actor: str) -> None:
+        """Remove a retired control from administration while retaining its audit event."""
+        control = self.get_control(control_id, version)
+        if not control:
+            raise ValueError("control version was not found")
+        if control.get("state") != "retired":
+            raise ValueError("Only retired controls can be removed")
+        if any(
+            item.get("control_id") == control["control_id"]
+            and str(item.get("control_version") or "*") in {"*", str(version)}
+            and item.get("status") == "approved"
+            for item in self.list_exceptions()
+        ):
+            raise ValueError("Revoke active exceptions before removing this control")
+        self._delete_blob(str(control.get("detector_ref") or ""))
+        self._delete(APPROVALS_TABLE, control["control_id"], str(version))
+        self._delete(CONTROLS_TABLE, control["control_id"], str(version))
+        self.audit("control.removed", actor, {"control_id": control["control_id"], "version": str(version)})
+
+    def remove_policy(self, document_id: str, version: str, *, actor: str) -> None:
+        """Remove a retired policy after all of its controls have been removed."""
+        policy = self.get_policy(document_id, version)
+        if not policy:
+            raise ValueError("policy version was not found")
+        if policy.get("status") != "retired":
+            raise ValueError("Only retired policies can be removed")
+        if self.policy_controls(document_id, version):
+            raise ValueError("Remove the retired controls linked to this policy before removing the policy")
+        for clause in self.list_policy_clauses(document_id, version):
+            self._delete(POLICY_CLAUSES_TABLE, f"{policy['document_id']}@{version}", str(clause.get("clause_id")))
+        for job in self._list(POLICY_JOBS_TABLE):
+            if job.get("document_id") == policy["document_id"] and str(job.get("policy_version")) == str(version):
+                self._delete(POLICY_JOBS_TABLE, policy["document_id"], str(job.get("job_id")))
+        for path in (policy.get("source_blob"), policy.get("extracted_text_blob"), policy.get("analysis_blob")):
+            self._delete_blob(str(path or ""))
+        self._delete(POLICIES_TABLE, policy["document_id"], str(version))
+        self.audit("policy.removed", actor, {"document_id": policy["document_id"], "version": str(version)})
 
     def save_policy_analysis(self, document_id: str, version: str, analysis: dict[str, Any]) -> dict[str, Any]:
         policy = self.get_policy(document_id, version)

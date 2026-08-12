@@ -277,6 +277,26 @@ def policy_job(req: func.HttpRequest) -> func.HttpResponse:
     return _json_response({"job": value}, 200 if value else 404)
 
 
+def policy_action(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        raw = _body(req)
+        action = str(raw.get("action") or "")
+        document_id = str(raw.get("document_id") or "")
+        version = str(raw.get("version") or "")
+        actor = _authorize(req, "Policy.Author")
+        plane = get_control_plane()
+        if action == "retire":
+            return _json_response({"policy": plane.retire_policy(document_id, version, actor=actor)})
+        if action == "remove":
+            plane.remove_policy(document_id, version, actor=actor)
+            return _json_response({"removed": True})
+        raise ValueError("action must be retire or remove")
+    except PermissionError as exc:
+        return _json_response({"error": str(exc)}, 401)
+    except (TypeError, ValueError) as exc:
+        return _json_response({"error": str(exc)}, 400)
+
+
 def _author_deterministic_control(raw: dict[str, Any], *, actor: str) -> dict[str, Any]:
     """Create an immutable deterministic control only after executing its tests."""
     plane = get_control_plane()
@@ -404,7 +424,10 @@ def control_action(req: func.HttpRequest) -> func.HttpResponse:
                 expected_revision=int(raw["expected_revision"]) if raw.get("expected_revision") is not None else None,
             )
             return _json_response({"control": value})
-        raise ValueError("action must be clarify, revise, approve, activate, suspend, or retire")
+        if action == "remove":
+            plane.remove_control(control_id, version, actor=actor)
+            return _json_response({"removed": True})
+        raise ValueError("action must be clarify, revise, approve, activate, suspend, retire, or remove")
     except PermissionError as exc:
         return _json_response({"error": str(exc)}, 401)
     except (TypeError, ValueError) as exc:

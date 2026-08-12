@@ -251,6 +251,21 @@ def test_policy_job_extracts_proposes_validates_and_persists():
     assert plane.get_policy_analysis(policy["document_id"], policy["version"])["controls"][0]["control_id"] == "sanctions.russia-location"
 
 
+def test_policy_job_retry_reuses_controls_and_clears_stale_errors():
+    plane = ControlPlane(connection_string="")
+    policy = plane.save_policy_document({"title": "Sanctions", "version": "2026-01", "filename": "policy.txt"}, POLICY_TEXT)
+    job = plane.record_policy_job(policy["document_id"], policy["version"])
+
+    first = process_policy_job(job, plane, interpreter=FakeInterpreter())
+    plane.update_policy_job(job["job_id"], errors=["transient retry error"])
+    retried = process_policy_job(job, plane, interpreter=FakeInterpreter())
+
+    assert [(item["control_id"], item["version"]) for item in retried] == [(item["control_id"], item["version"]) for item in first]
+    stored = plane.get_policy_job(job["job_id"])
+    assert stored["status"] == "completed"
+    assert stored["errors"] == []
+
+
 def test_openai_model_version_policy_shape_errors_become_clarification_not_failure():
     text = "OpenAI usage: model prior to GPT 5.5 shall not be used"
 

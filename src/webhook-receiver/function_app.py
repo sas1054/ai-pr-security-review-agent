@@ -24,6 +24,7 @@ try:
         exception_action as admin_exception_action,
         exceptions as admin_exceptions,
         policies as admin_policies,
+        policy_action as admin_policy_action,
         policy_job as admin_policy_job,
         portal as admin_portal,
         regulation as admin_regulation,
@@ -132,6 +133,11 @@ def admin_policies_route(req: func.HttpRequest) -> func.HttpResponse:
 @app.route(route="admin/api/policy-job", methods=["GET", "POST"])
 def admin_policy_job_route(req: func.HttpRequest) -> func.HttpResponse:
     return _unavailable() if _load_error else admin_policy_job(req)
+
+
+@app.route(route="admin/api/policy-action", methods=["POST"])
+def admin_policy_action_route(req: func.HttpRequest) -> func.HttpResponse:
+    return _unavailable() if _load_error else admin_policy_action(req)
 
 
 @app.route(route="admin/api/controls", methods=["GET", "POST"])
